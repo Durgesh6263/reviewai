@@ -57,7 +57,9 @@ function LoginForm() {
       }
       router.refresh();
     } catch (error: any) {
-      const message = error.response?.data?.error || error.response?.data?.message || 'Invalid email or password';
+      const errData = error.response?.data;
+      const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Invalid email or password';
+      const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
       toast.error(message);
     } finally {
       setIsSubmitting(false);

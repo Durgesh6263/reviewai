@@ -81,7 +81,9 @@ function RegisterForm() {
       router.push(redirect);
       router.refresh();
     } catch (error: any) {
-      const message = error.response?.data?.error || error.response?.data?.message || 'Registration failed. Please try again.';
+      const errData = error.response?.data;
+      const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Registration failed. Please try again.';
+      const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
       toast.error(message);
     } finally {
       setIsSubmitting(false);
