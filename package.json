@@ -1,0 +1,31 @@
+{
+  "name": "reviewai",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "test:coverage": "turbo run test:coverage",
+    "db:migrate": "turbo run db:migrate --filter=@reviewai/backend",
+    "db:reset": "turbo run db:reset --filter=@reviewai/backend",
+    "db:seed": "turbo run db:seed --filter=@reviewai/backend",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "turbo": "^1.13.0",
+    "typescript-eslint": "^8.70.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

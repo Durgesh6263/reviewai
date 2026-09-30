@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # BACKEND
+  # ============================================================================
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - API_PREFIX=/api/v1
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - JWT_ACCESS_EXPIRY=15m
+      - JWT_REFRESH_EXPIRY=7d
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DEFAULT_AI_PROVIDER=openai
+      - EMAIL_PROVIDER=resend
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - EMAIL_FROM=noreply@reviewai.com
+      - EMAIL_FROM_NAME=ReviewAI
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX_REQUESTS=100
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+    env_file:
+      - ./apps/backend/.env
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - reviewai-network
+
+  # ============================================================================
+  # FRONTEND
+  # ============================================================================
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      - NEXT_TELEMETRY_DISABLED=1
+    env_file:
+      - ./apps/frontend/.env.local
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - reviewai-network
+
+  # ============================================================================
+  # OPTIONAL: Local Supabase (for full local development)
+  # ============================================================================
+  # Uncomment below for fully local development with Supabase
+  # Requires: supabase CLI installed, run `supabase start` first
+  #
+  # supabase:
+  #   image: supabase/supabase:latest
+  #   ports:
+  #     - "54321:54321"  # API Gateway
+  #     - "54322:54322"  # Database
+  #     - "54323:54323"  # Studio
+  #     - "54324:54324"  # Inbucket (email testing)
+  #   environment:
+  #     - POSTGRES_PASSWORD=postgres
+  #     - JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters
+  #     - ANON_KEY=your-anon-key
+  #     - SERVICE_ROLE_KEY=your-service-role-key
+  #     - DASHBOARD_USERNAME=admin
+  #     - DASHBOARD_PASSWORD=admin
+  #   volumes:
+  #     - supabase-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD", "pg_isready", "-U", "postgres"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - reviewai-network
+
+networks:
+  reviewai-network:
+    driver: bridge
+
+# volumes:
+#   supabase-data:
