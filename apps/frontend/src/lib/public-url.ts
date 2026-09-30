@@ -5,18 +5,23 @@
  */
 
 export function getPublicBaseUrl(): string {
-  // 1. If explicit production app URL is set, prioritize canonical domain for QR generation
+  // 1. If running in browser, prioritize the actual active host origin (e.g. reviewai-flame-pi.vercel.app or custom domain)
+  if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
+    return window.location.origin.replace(/\/$/, '');
+  }
+
+  // 2. If explicit production app URL is set, use canonical domain
   const envUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL;
-  if (envUrl && envUrl.trim() !== '') {
+  if (envUrl && envUrl.trim() !== '' && !envUrl.includes('reviewai-frontend.vercel.app')) {
     return envUrl.trim().replace(/\/$/, '');
   }
 
-  // 2. If running in browser and no envUrl, use current window origin
+  // 3. Browser fallback
   if (typeof window !== 'undefined' && window.location?.origin) {
     return window.location.origin.replace(/\/$/, '');
   }
 
-  // 3. Fallback URL
+  // 4. Fallback URL
   return 'http://localhost:3000';
 }
 
