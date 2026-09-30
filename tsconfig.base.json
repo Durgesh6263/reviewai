@@ -16,11 +16,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": false,
-    "baseUrl": ".",
     "paths": {
-      "@reviewai/types/*": ["packages/types/src/*"],
-      "@reviewai/shared/*": ["packages/shared/src/*"],
-      "@reviewai/api-client/*": ["packages/api-client/src/*"]
+      "@reviewai/types/*": ["./packages/types/src/*"],
+      "@reviewai/shared/*": ["./packages/shared/src/*"],
+      "@reviewai/api-client/*": ["./packages/api-client/src/*"]
     }
   },
   "exclude": ["node_modules", "dist", ".turbo"]
