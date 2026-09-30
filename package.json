@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
+    "build:backend": "turbo run build --filter=@reviewai/backend...",
     "start": "turbo run start",
     "lint": "turbo run lint",
     "type-check": "turbo run type-check",
