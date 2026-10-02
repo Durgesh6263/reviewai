@@ -53,12 +53,12 @@ export const createBusinessSchema = z.object({
     name: z.string().min(1, 'Business name is required').max(255).trim(),
     category: z.string().max(100).trim().optional().or(z.literal('')).transform(v => v || 'other'),
     custom_tags: z.array(z.string().max(50)).optional(),
-    google_review_url: z.string().url('Invalid Google Review URL').max(2048).optional().or(z.literal('')).transform(v => v || undefined),
+    google_review_url: z.string({ required_error: 'Google Review URL is required' }).min(1, 'Google Review URL is required').url('Please enter a valid Google Review or Google Maps business URL').max(2048),
     google_place_id: z.string().max(255).trim().optional().or(z.literal('')).transform(v => v || undefined),
     slug: z.string().max(100).trim().optional().or(z.literal('')).transform(v => v || undefined),
     description: z.string().max(2000).trim().optional().or(z.literal('')).transform(v => v || undefined),
     website_url: z.string().url('Invalid website URL').max(500).optional().or(z.literal('')).transform(v => v || undefined),
-    phone: z.string().max(50).trim().optional().or(z.literal('')).transform(v => v || undefined),
+    phone: z.string({ required_error: 'Business phone number is required' }).min(1, 'Business phone number is required').regex(/^[\d\s\-\+\(\)]{7,}$/, 'Please enter a valid phone number').max(50).trim(),
     email: z.string().email('Invalid email address').max(255).trim().optional().or(z.literal('')).transform(v => v || undefined),
     address: addressSchema.optional().nullable(),
     address_line1: z.string().max(255).trim().optional().or(z.literal('')).transform(v => v || undefined),
@@ -69,9 +69,15 @@ export const createBusinessSchema = z.object({
     country: z.string().max(100).trim().optional().or(z.literal('')).transform(v => v || undefined),
     timezone: z.string().optional(),
     settings: z.record(z.any()).optional().nullable(),
-  }).refine(data => Boolean(data.google_review_url || data.google_place_id), {
-    message: 'Either Google Review URL or Google Place ID is required',
-    path: ['google_review_url'],
+  }).refine(data => {
+    const addr: any = data.address;
+    if (typeof addr === 'string' && addr.trim().length > 0) return true;
+    if (addr && typeof addr === 'object' && (addr.formatted?.trim() || addr.street?.trim() || addr.city?.trim())) return true;
+    if (data.address_line1 && data.address_line1.trim().length > 0) return true;
+    return false;
+  }, {
+    message: 'Business address is required',
+    path: ['address'],
   }),
 });
 

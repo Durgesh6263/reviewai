@@ -175,11 +175,13 @@ export function errorHandler(
   }
 
   if (err instanceof AppError) {
+    const isDup = err.code === 'GOOGLE_BUSINESS_ALREADY_REGISTERED';
     res.status(err.statusCode).json({
       success: false,
       error: err.message,
       code: err.code,
       details: err.details,
+      ...(isDup && err.details ? err.details : {}),
     });
     return;
   }

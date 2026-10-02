@@ -35,6 +35,21 @@ export class QRService {
     // Verify business access
     await this.verifyBusinessAccess(businessId, userId, userRole, ['owner', 'admin', 'manager']);
 
+    // Verify onboarding duplicate protection
+    const { data: progress } = await this.supabase
+      .from('onboarding_progress')
+      .select('step_data')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if ((progress?.step_data as any)?.duplicate_blocked?.is_blocked) {
+      throw new AppError(
+        'Cannot generate QR code: duplicate business registration is blocked.',
+        403,
+        'DUPLICATE_BUSINESS_BLOCKED'
+      );
+    }
+
     const businessSlug = await this.getBusinessSlug(businessId);
     const rawBase = data.slug || `${businessSlug}-${Date.now().toString(36)}`;
     const baseSlug = rawBase

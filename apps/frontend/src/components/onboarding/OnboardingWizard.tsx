@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'react-hot-toast';
+import { api } from '@/lib/api-client';
 import { onboardingTracker } from '@/lib/onboarding-tracker';
-import type { OnboardingStep, OnboardingStepData, ExperienceTag, OnboardingProgress } from '@/lib/onboarding-types';
+import type { OnboardingStep, OnboardingStepData, BusinessInfoStepData, ExperienceTag, OnboardingProgress } from '@/lib/onboarding-types';
 import {
   ONBOARDING_STEPS,
   ONBOARDING_STEP_LABELS,
@@ -18,7 +19,6 @@ import {
 import { getCategoryExperienceTags } from '@/lib/categories';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { BusinessInfoStep } from './steps/BusinessInfoStep';
-import { GoogleConfigStep } from './steps/GoogleConfigStep';
 import { ExperienceTagsStep } from './steps/ExperienceTagsStep';
 import { QRGenerationStep } from './steps/QRGenerationStep';
 import { QRTestStep } from './steps/QRTestStep';
@@ -36,7 +36,14 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCheckingBusiness, setIsCheckingBusiness] = useState(false);
   const [businessId, setBusinessId] = useState<string | null>(null);
+  const [duplicateBlocked, setDuplicateBlocked] = useState<{
+    isBlocked: boolean;
+    googleReviewUrl?: string;
+    existingAccount?: string;
+  } | null>(null);
+  const [businessInfoErrors, setBusinessInfoErrors] = useState<Partial<Record<keyof BusinessInfoStepData, string>>>({});
 
   const currentStep = ONBOARDING_STEPS[currentStepIndex];
   const isFirstStep = currentStepIndex === 0;
@@ -53,12 +60,47 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       const prog = await onboardingTracker.getProgress();
       if (prog) {
         setProgress(prog);
-        setCurrentStepIndex(ONBOARDING_STEPS.indexOf(prog.current_step));
+
+        // Check if server indicated duplicate blocked
+        if (prog.status === 'duplicate_blocked' || (prog.step_data as any)?.duplicate_blocked) {
+          const dupBlock = (prog.step_data as any)?.duplicate_blocked || {};
+          const rawAccount =
+            dupBlock.maskedExistingAccount ||
+            dupBlock.existing_account ||
+            (prog.step_data as any)?.duplicate_existing_account ||
+            (prog.step_data as any)?.existing_account;
+
+          const maskedAccount =
+            rawAccount && rawAccount !== 'Protected Account' && rawAccount !== 'Protected'
+              ? rawAccount
+              : 'du************le@gmail.com';
+
+          const safeUrl =
+            dupBlock.googleReviewUrl ||
+            dupBlock.google_review_url ||
+            (prog.step_data as any)?.google_review_url ||
+            prog.step_data?.business_info?.google_review_url ||
+            '';
+
+          setDuplicateBlocked({
+            isBlocked: true,
+            googleReviewUrl: safeUrl,
+            existingAccount: maskedAccount,
+          });
+          setCurrentStepIndex(ONBOARDING_STEPS.indexOf('business_info'));
+        } else {
+          // Handle legacy google_config if present
+          let step = prog.current_step as string;
+          if (step === 'google_config') {
+            step = 'experience_tags';
+          }
+          const stepIdx = ONBOARDING_STEPS.indexOf(step as OnboardingStep);
+          setCurrentStepIndex(stepIdx >= 0 ? stepIdx : 0);
+        }
+
         setStepData(prog.step_data || {});
-        // Extract business_id from step_data if available
-        if (prog.step_data?.business_info) {
-          // We don't store business_id in step_data, but we can track it
-          // The business will be created when user completes business_info step
+        if (prog.business_id) {
+          setBusinessId(prog.business_id);
         }
       }
     } catch (error) {
@@ -75,7 +117,6 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       const updatedProgress = await onboardingTracker.updateStep(step, data);
       setProgress(updatedProgress);
       setStepData(updatedProgress.step_data);
-      toast.success('Progress saved');
     } catch (error) {
       console.error('Failed to save step:', error);
       toast.error('Failed to save progress');
@@ -84,38 +125,170 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     }
   };
 
-  const handleBusinessCreated = useCallback((newBusinessId: string) => {
-    setBusinessId(newBusinessId);
-    // Save the business_id to step data for use in later steps
-    setStepData(prev => {
-      const currentBusinessInfo = prev.business_info || { name: '', google_review_url: '', timezone: 'UTC' };
-      return {
-        ...prev,
-        business_info: { ...currentBusinessInfo, business_id: newBusinessId }
-      };
-    });
+  const handleClearDuplicateWarning = useCallback(() => {
+    setDuplicateBlocked(null);
   }, []);
 
   const handleNext = useCallback(async () => {
     if (currentStepIndex < ONBOARDING_STEPS.length - 1) {
-      // For business_info step, create the business first
+      // Step 2: Business Info validation and creation
       if (currentStep === 'business_info') {
-        // The BusinessInfoStep handles creation internally via onBusinessCreated callback
-        // Just save the step data and proceed
-        await saveStep(currentStep, stepData);
-        setCurrentStepIndex(prev => prev + 1);
+        if (duplicateBlocked?.isBlocked) {
+          toast.error('Please resolve the duplicate business issue or contact support.');
+          return;
+        }
+
+        const bInfo = stepData.business_info || {
+          name: '',
+          category: '',
+          address: '',
+          phone: '',
+          google_review_url: '',
+          website_url: '',
+          timezone: 'UTC',
+        };
+
+        const errors: Partial<Record<keyof BusinessInfoStepData, string>> = {};
+        if (!bInfo.name?.trim()) {
+          errors.name = 'Business name is required';
+        }
+        if (!bInfo.address?.trim()) {
+          errors.address = 'Business address is required';
+        }
+        if (!bInfo.phone?.trim()) {
+          errors.phone = 'Business phone number is required';
+        } else if (!/^[\d\s\-\+\(\)]{7,}$/.test(bInfo.phone.trim())) {
+          errors.phone = 'Please enter a valid phone number (min 7 digits)';
+        }
+        if (!bInfo.google_review_url?.trim()) {
+          errors.google_review_url = 'Google Review URL is required';
+        } else {
+          try {
+            const url = new URL(bInfo.google_review_url.trim());
+            const host = url.hostname.toLowerCase();
+            const isGoogle =
+              host === 'g.page' ||
+              host.endsWith('.g.page') ||
+              host === 'maps.app.goo.gl' ||
+              host === 'goo.gl' ||
+              host.endsWith('.goo.gl') ||
+              host === 'google.com' ||
+              host.endsWith('.google.com') ||
+              /(^|\.)google\.[a-z]{2,3}(\.[a-z]{2})?$/.test(host);
+            if (!isGoogle) {
+              errors.google_review_url = 'Please enter a valid Google Review or Google Maps business URL';
+            }
+          } catch {
+            errors.google_review_url = 'Please enter a valid URL';
+          }
+        }
+
+        if (Object.keys(errors).length > 0) {
+          setBusinessInfoErrors(errors);
+          toast.error('Please complete all required fields: Business Name, Address, Phone, and Google Review URL.');
+          return;
+        }
+
+        setBusinessInfoErrors({});
+        setIsCheckingBusiness(true);
+
+        try {
+          const payload = {
+            name: bInfo.name.trim(),
+            category: bInfo.category || 'other',
+            address: bInfo.address.trim(),
+            address_line1: bInfo.address.trim(),
+            phone: bInfo.phone.trim(),
+            google_review_url: bInfo.google_review_url.trim(),
+            website_url: bInfo.website_url?.trim() || undefined,
+            timezone: bInfo.timezone || 'UTC',
+          };
+
+          const res = await api.post<{ success: boolean; data: { id: string } }>('/businesses', payload);
+          const newBizId = res.data?.id;
+
+          if (newBizId) {
+            setBusinessId(newBizId);
+            setDuplicateBlocked(null);
+
+            const updatedStepData = {
+              ...stepData,
+              business_info: {
+                ...bInfo,
+                business_id: newBizId,
+              },
+            };
+            setStepData(updatedStepData);
+
+            // Advance step to experience_tags
+            await saveStep('experience_tags', updatedStepData);
+            setCurrentStepIndex(ONBOARDING_STEPS.indexOf('experience_tags'));
+            toast.success('Business verified and saved!');
+          }
+        } catch (err: any) {
+          console.error('Business creation/verification failed:', err?.message || err);
+          const resData = err.response?.data;
+          const isDuplicate =
+            err.response?.status === 409 ||
+            resData?.code === 'GOOGLE_BUSINESS_ALREADY_REGISTERED' ||
+            resData?.error?.code === 'GOOGLE_BUSINESS_ALREADY_REGISTERED';
+
+          if (isDuplicate) {
+            const details = resData?.details || (typeof resData?.error === 'object' ? resData.error.details : {}) || resData || {};
+            const rawAccount =
+              details.maskedExistingAccount ||
+              details.existing_account ||
+              details.masked_existing_account ||
+              resData?.maskedExistingAccount ||
+              resData?.existing_account;
+
+            const maskedAccount =
+              rawAccount && rawAccount !== 'Protected Account' && rawAccount !== 'Protected'
+                ? rawAccount
+                : 'du************le@gmail.com';
+
+            const safeUrl =
+              details.googleReviewUrl ||
+              details.google_review_url ||
+              resData?.googleReviewUrl ||
+              resData?.google_review_url ||
+              bInfo.google_review_url;
+
+            setDuplicateBlocked({
+              isBlocked: true,
+              googleReviewUrl: safeUrl,
+              existingAccount: maskedAccount,
+            });
+            const errorMsg =
+              typeof resData?.error === 'string'
+                ? resData.error
+                : (resData?.error?.message || 'This Google Business is already registered with ReviewAI.');
+            toast.error(errorMsg);
+          } else if (err.response?.status === 400) {
+            const msg = typeof resData?.error === 'string' ? resData.error : (resData?.error?.message || 'Please check the entered business details.');
+            toast.error(msg);
+          } else {
+            const msg = typeof resData?.error === 'string' ? resData.error : (resData?.error?.message || 'Failed to validate business. Please check details and try again.');
+            toast.error(msg);
+          }
+        } finally {
+          setIsCheckingBusiness(false);
+        }
       } else {
         await saveStep(currentStep, stepData);
         setCurrentStepIndex(prev => prev + 1);
       }
     }
-  }, [currentStepIndex, currentStep, stepData, saveStep]);
+  }, [currentStepIndex, currentStep, stepData, duplicateBlocked, saveStep]);
 
   const handleBack = useCallback(() => {
     if (currentStepIndex > 0) {
+      if (duplicateBlocked?.isBlocked) {
+        setDuplicateBlocked(null);
+      }
       setCurrentStepIndex(prev => prev - 1);
     }
-  }, [currentStepIndex]);
+  }, [currentStepIndex, duplicateBlocked]);
 
   const handleComplete = useCallback(async () => {
     setIsSubmitting(true);
@@ -162,11 +335,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
             stepData={stepData.business_info}
             timezones={TIMEZONES}
             defaultTags={DEFAULT_TAGS}
-            onBusinessCreated={handleBusinessCreated}
+            duplicateBlocked={duplicateBlocked}
+            onClearDuplicateWarning={handleClearDuplicateWarning}
+            validationErrors={businessInfoErrors}
           />
         );
-      case 'google_config':
-        return <GoogleConfigStep {...baseProps} stepData={stepData.google_config} />;
       case 'experience_tags': {
         const categoryTags = getCategoryExperienceTags(stepData.business_info?.category);
         return <ExperienceTagsStep {...baseProps} stepData={stepData.tags} defaultTags={categoryTags.length >= 6 ? categoryTags : DEFAULT_TAGS} />;
@@ -289,11 +462,20 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
             ) : (
               <Button
                 onClick={handleNext}
-                disabled={isSaving}
+                disabled={isSaving || isCheckingBusiness || (currentStep === 'business_info' && duplicateBlocked?.isBlocked)}
                 className="w-48"
               >
-                Next
-                <ChevronRight className="h-4 w-4 ml-2" />
+                {isCheckingBusiness ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    Checking business...
+                  </>
+                ) : (
+                  <>
+                    Next
+                    <ChevronRight className="h-4 w-4 ml-2" />
+                  </>
+                )}
               </Button>
             )}
           </div>

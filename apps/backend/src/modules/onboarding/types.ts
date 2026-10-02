@@ -161,7 +161,6 @@ export interface PilotFeedbackSummaryResponse {
 export const ONBOARDING_STEPS: OnboardingStep[] = [
   'welcome',
   'business_info',
-  'google_config',
   'experience_tags',
   'qr_generation',
   'qr_test',

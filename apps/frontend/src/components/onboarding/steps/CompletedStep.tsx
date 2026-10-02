@@ -21,7 +21,6 @@ const FEEDBACK_CATEGORIES: { value: PilotFeedbackCategory; label: string; icon: 
   { value: 'overall', label: 'Overall Experience', icon: Sparkles },
   { value: 'signup', label: 'Signup Process', icon: ArrowRight },
   { value: 'business_setup', label: 'Business Setup', icon: Sparkles },
-  { value: 'google_config', label: 'Google Config', icon: CheckCircle },
   { value: 'tags', label: 'Experience Tags', icon: Star },
   { value: 'qr_design', label: 'QR Design', icon: Sparkles },
   { value: 'qr_test', label: 'QR Testing', icon: CheckCircle },

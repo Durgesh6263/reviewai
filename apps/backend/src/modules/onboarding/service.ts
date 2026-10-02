@@ -22,6 +22,7 @@ import {
   PILOT_LIMITS,
 } from './types';
 import { AppError, NotFoundError } from '../../shared/exceptions';
+import { resolveGoogleBusinessIdentity } from '../business/google-business';
 
 export class OnboardingService {
   constructor(private supabase: SupabaseClient) {}
@@ -141,6 +142,34 @@ export class OnboardingService {
       .eq('user_id', userId)
       .single();
 
+    // 1. If moving past business_info, enforce that duplicate is not blocked and business exists
+    const restrictedSteps = ['experience_tags', 'qr_generation', 'qr_test', 'dashboard_tour', 'completed'];
+    if (restrictedSteps.includes(step)) {
+      if (progress && (progress.step_data as any)?.duplicate_blocked?.is_blocked) {
+        throw new AppError(
+          'Onboarding is blocked: this Google Business is already registered with ReviewAI.',
+          409,
+          'GOOGLE_BUSINESS_ALREADY_REGISTERED'
+        );
+      }
+
+      // Check if user has an active, valid business
+      const { data: userBusinesses } = await this.supabase
+        .from('businesses')
+        .select('id')
+        .eq('owner_id', userId)
+        .is('deleted_at', null)
+        .limit(1);
+
+      if (!userBusinesses || userBusinesses.length === 0) {
+        throw new AppError(
+          'A valid, registered business is required before accessing this step.',
+          403,
+          'BUSINESS_REQUIRED'
+        );
+      }
+    }
+
     if (fetchError) {
       if (this.isTableMissing(fetchError)) {
         const mem = this.getMemoryItem(userId);
@@ -233,6 +262,21 @@ export class OnboardingService {
    * Complete onboarding
    */
   async completeOnboarding(userId: string): Promise<CompleteOnboardingResponse> {
+    // Check if user has an active, valid business
+    const { data: userBusinesses } = await this.supabase
+      .from('businesses')
+      .select('id')
+      .eq('owner_id', userId)
+      .is('deleted_at', null)
+      .limit(1);
+
+    if (!userBusinesses || userBusinesses.length === 0) {
+      throw new AppError(
+        'A valid, registered business is required to complete onboarding.',
+        403,
+        'BUSINESS_REQUIRED'
+      );
+    }
     const { data: progress, error } = await this.supabase
       .from('onboarding_progress')
       .select('*')
@@ -328,56 +372,39 @@ export class OnboardingService {
   /**
    * Verify Google Review URL format and validity
    */
-  async verifyGoogleReviewUrl(url: string): Promise<{ valid: boolean; details?: string }> {
-    try {
-      const parsed = new URL(url);
-      const hostname = parsed.hostname.toLowerCase();
-
-      const isGoogleDomain =
-        hostname === 'g.page' ||
-        hostname.endsWith('.g.page') ||
-        hostname === 'maps.app.goo.gl' ||
-        hostname === 'goo.gl' ||
-        hostname.endsWith('.goo.gl') ||
-        hostname === 'google.com' ||
-        hostname.endsWith('.google.com') ||
-        hostname.includes('google.');
-
-      if (!isGoogleDomain) {
-        return {
-          valid: false,
-          details: 'URL must belong to a Google domain (e.g., g.page, search.google.com, maps.google.com)',
-        };
-      }
-
-      const isReviewPattern =
-        parsed.pathname.includes('/review') ||
-        parsed.pathname.includes('/writereview') ||
-        parsed.pathname.includes('/place') ||
-        parsed.pathname.includes('/maps') ||
-        parsed.searchParams.has('placeid') ||
-        parsed.searchParams.has('cid') ||
-        parsed.searchParams.has('q') ||
-        hostname.includes('g.page') ||
-        hostname.includes('goo.gl');
-
-      if (!isReviewPattern) {
-        return {
-          valid: false,
-          details: 'URL does not match standard Google review formats (e.g., https://g.page/r/.../review)',
-        };
-      }
-
-      return {
-        valid: true,
-        details: 'URL verified successfully! Google Reviews page is accessible.',
-      };
-    } catch {
+  async verifyGoogleReviewUrl(url: string): Promise<{ valid: boolean; details?: string; is_duplicate?: boolean; place_id?: string }> {
+    const identity = resolveGoogleBusinessIdentity(url);
+    if (!identity.isValid) {
       return {
         valid: false,
-        details: 'Invalid URL format.',
+        details: identity.details || 'Please enter a valid Google Review or Google Maps business URL.',
       };
     }
+
+    // Check duplicate Place ID or URL in database
+    if (identity.placeId) {
+      const { data: existing } = await this.supabase
+        .from('businesses')
+        .select('id, owner_id')
+        .is('deleted_at', null)
+        .eq('settings->>google_place_id', identity.placeId)
+        .limit(1);
+
+      if (existing && existing.length > 0) {
+        return {
+          valid: false,
+          is_duplicate: true,
+          place_id: identity.placeId,
+          details: 'This Google Business is already registered with ReviewAI.',
+        };
+      }
+    }
+
+    return {
+      valid: true,
+      place_id: identity.placeId || undefined,
+      details: 'URL verified successfully! Google Reviews page is accessible.',
+    };
   }
 
   private testScanSessions: Map<string, { status: string; redirect_url?: string; created_at: number }> = new Map();
@@ -522,7 +549,7 @@ export class OnboardingService {
       });
 
       const funnel: OnboardingFunnel[] = [];
-      const stepOrder = ['welcome', 'business_info', 'google_config', 'experience_tags', 'qr_generation', 'qr_test', 'dashboard_tour', 'completed'];
+      const stepOrder = ['welcome', 'business_info', 'experience_tags', 'qr_generation', 'qr_test', 'dashboard_tour', 'completed'];
       stepOrder.forEach(step => {
         const c = counts.get(step) || { total: 0, completed: 0 };
         funnel.push({
@@ -620,23 +647,32 @@ export class OnboardingService {
     const order: Record<OnboardingStep, number> = {
       welcome: 1,
       business_info: 2,
-      google_config: 3,
-      experience_tags: 4,
-      qr_generation: 5,
-      qr_test: 6,
-      dashboard_tour: 7,
-      completed: 8,
+      google_config: 2, // mapped for backward compatibility
+      experience_tags: 3,
+      qr_generation: 4,
+      qr_test: 5,
+      dashboard_tour: 6,
+      completed: 7,
     };
     return order[step] || 0;
   }
 
   private mapProgress(row: any): OnboardingProgress {
+    let currentStep = row.current_step;
+    if (currentStep === 'google_config') {
+      currentStep = 'experience_tags';
+    }
+
+    const completedSteps = (row.completed_steps || []).map((s: string) =>
+      s === 'google_config' ? 'experience_tags' : s
+    );
+
     return {
       id: row.id,
       user_id: row.user_id,
       business_id: row.business_id,
-      current_step: row.current_step,
-      completed_steps: row.completed_steps || [],
+      current_step: currentStep,
+      completed_steps: Array.from(new Set(completedSteps)),
       step_data: row.step_data || {},
       started_at: row.started_at,
       completed_at: row.completed_at,

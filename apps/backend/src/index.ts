@@ -406,6 +406,7 @@ app.use(`${API_PREFIX}/privacy`, createPrivacyRoutes(privacyController, authMidd
 
 // Onboarding routes (protected)
 app.use(`${API_PREFIX}/onboarding`, createOnboardingRoutes(supabaseAdmin, authService));
+app.use(`${API_PREFIX}`, createOnboardingRoutes(supabaseAdmin, authService));
 
 // ============================================================================
 // 404 HANDLER

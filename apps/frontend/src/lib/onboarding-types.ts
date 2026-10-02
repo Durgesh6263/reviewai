@@ -23,6 +23,7 @@ export interface OnboardingProgress {
   step_data: OnboardingStepData;
   started_at: string;
   completed_at: string | null;
+  status?: string;
   is_pilot_user: boolean;
   pilot_cohort: string | null;
   created_at: string;
@@ -37,6 +38,11 @@ export interface OnboardingStepData {
   qr_test?: QRTestStepData;
   dashboard_tour?: { completed_tour?: boolean; current_tour_step?: number };
   completed?: { pilot_feedback_submitted?: boolean };
+  duplicate_blocked?: {
+    is_blocked: boolean;
+    google_review_url?: string;
+    existing_account?: string;
+  };
   [key: string]: unknown;
 }
 
@@ -47,9 +53,9 @@ export interface BusinessInfoStepData {
   google_place_id?: string;
   google_review_url: string;
   website_url?: string;
-  phone?: string;
-  address?: string;
-  timezone: string;
+  phone: string;
+  address: string;
+  timezone?: string;
   business_id?: string;
 }
 
@@ -111,7 +117,6 @@ export type PilotFeedbackCategory =
 export const ONBOARDING_STEPS: OnboardingStep[] = [
   'welcome',
   'business_info',
-  'google_config',
   'experience_tags',
   'qr_generation',
   'qr_test',
@@ -132,7 +137,7 @@ export const ONBOARDING_STEP_LABELS: Record<OnboardingStep, string> = {
 
 export const ONBOARDING_STEP_DESCRIPTIONS: Record<OnboardingStep, string> = {
   welcome: 'Welcome to ReviewAI! Let\'s get you set up.',
-  business_info: 'Tell us about your business',
+  business_info: 'Tell us about your business & Google Reviews',
   google_config: 'Connect your Google Review page',
   experience_tags: 'Add experience tags for reviews',
   qr_generation: 'Design your QR code',

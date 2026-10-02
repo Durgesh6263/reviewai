@@ -19,28 +19,32 @@ import {
 import { getCategoryById, getDefaultTagsForCategory } from './categories';
 import { AppError, NotFoundError, ConflictError, AuthorizationError } from '../../shared/exceptions';
 import { parsePaginationParams, buildPaginationMeta } from '../../shared/utils/pagination';
+import { resolveGoogleBusinessIdentity, normalizeGoogleReviewUrl, maskEmail } from './google-business';
 
 export class BusinessService {
+  private static registrationLocks = new Map<string, Promise<any>>();
+
   constructor(private supabase: SupabaseClient) {}
 
   /**
    * Create a new business for the authenticated user
    */
   async createBusiness(userId: string, data: CreateBusinessRequest): Promise<Business> {
-    // Generate unique slug (using requested slug or business name)
-    const slug = await this.generateUniqueSlug(data.slug || data.name);
-
-    // Resolve Google Review URL (direct URL or derived from Google Place ID)
-    let reviewUrl = data.google_review_url?.trim();
-    if (!reviewUrl && data.google_place_id?.trim()) {
-      reviewUrl = `https://search.google.com/local/writereview?placeid=${encodeURIComponent(data.google_place_id.trim())}`;
+    // 1. Mandatory field validation
+    const name = data.name ? data.name.trim() : '';
+    if (!name) {
+      throw new AppError('Business name is required', 400, 'VALIDATION_ERROR');
     }
 
-    if (!reviewUrl) {
-      throw new AppError('Google Review URL or Google Place ID is required', 400, 'VALIDATION_ERROR');
+    const phone = data.phone ? data.phone.trim() : '';
+    if (!phone) {
+      throw new AppError('Business phone number is required', 400, 'VALIDATION_ERROR');
+    }
+    if (!/^[\d\s\-\+\(\)]{7,}$/.test(phone)) {
+      throw new AppError('Please enter a valid phone number', 400, 'VALIDATION_ERROR');
     }
 
-    // Prepare structured address if top-level fields were supplied
+    // Prepare structured address
     let formattedAddress: any = data.address;
     if (!formattedAddress && (data.address_line1 || data.city || data.state || data.postal_code || data.country)) {
       const parts = [
@@ -62,94 +66,371 @@ export class BusinessService {
       };
     }
 
-    // Merge user settings with defaults
-    const userSettings = (data.settings || {}) as Record<string, any>;
-    const reviewGoal = typeof userSettings.review_goal === 'number'
-      ? userSettings.review_goal
-      : typeof userSettings.monthly_review_goal === 'number'
-      ? userSettings.monthly_review_goal
-      : Number(userSettings.review_goal || userSettings.monthly_review_goal) || 10;
+    const addressText = typeof formattedAddress === 'string'
+      ? formattedAddress.trim()
+      : formattedAddress?.formatted?.trim() || formattedAddress?.street?.trim() || '';
 
-    const autoReplyEnabled = Boolean(userSettings.auto_reply_enabled);
-    const autoReplyTemplate = String(userSettings.auto_reply_template || '');
-    const languageDefault = String(
-      userSettings.language ||
-      userSettings.language_default ||
-      DEFAULT_BUSINESS_SETTINGS.language_default ||
-      'en'
-    );
-    const notificationEmail = String(userSettings.notification_email || data.email || '');
+    if (!addressText) {
+      throw new AppError('Business address is required', 400, 'VALIDATION_ERROR');
+    }
 
-    const categoryInput = (data as any).category || userSettings.category || 'other';
-    const categoryInfo = getCategoryById(categoryInput);
-    const initialTags = Array.isArray((data as any).custom_tags) && (data as any).custom_tags.length > 0
-      ? (data as any).custom_tags
-      : Array.isArray(userSettings.tags) && userSettings.tags.length > 0
-      ? userSettings.tags
-      : categoryInfo.defaultTags;
+    const rawReviewUrl = (data.google_review_url || data.google_place_id || '').trim();
+    if (!rawReviewUrl) {
+      throw new AppError('Google Review URL is required', 400, 'VALIDATION_ERROR');
+    }
 
-    const mergedSettings: Record<string, any> = {
-      ...DEFAULT_BUSINESS_SETTINGS,
-      ...userSettings,
-      category: categoryInfo.id,
-      category_name: categoryInfo.name,
-      tags: initialTags,
-      custom_tags: initialTags,
-      language_default: languageDefault,
-      review_goal: reviewGoal,
-      monthly_review_goal: reviewGoal,
-      auto_reply_enabled: autoReplyEnabled,
-      auto_reply_template: autoReplyTemplate,
-      notification_email: notificationEmail || null,
-      google_place_id: data.google_place_id || userSettings.google_place_id || null,
-    };
-
-    // Prepare business data
-    const businessData: any = {
-      owner_id: userId,
-      name: data.name.trim(),
-      slug,
-      description: data.description?.trim() || null,
-      google_review_url: reviewUrl,
-      website_url: data.website_url?.trim() || null,
-      phone: data.phone?.trim() || null,
-      address: formattedAddress || null,
-      timezone: data.timezone || 'UTC',
-      status: 'active' as BusinessStatus,
-      settings: mergedSettings,
-    };
-
-    const { data: business, error } = await this.supabase
-      .from('businesses')
-      .insert(businessData)
-      .select()
-      .single();
-
-    if (error || !business) {
-      console.error('Failed to insert business:', error);
+    // 2. Google Business Identity & Place ID Determination
+    const identity = resolveGoogleBusinessIdentity(rawReviewUrl);
+    if (!identity.isValid) {
       throw new AppError(
-        error?.message ? `Failed to create business: ${error.message}` : 'Failed to create business',
-        500,
-        'BUSINESS_CREATION_FAILED',
-        error ? { details: error.details, hint: error.hint, code: error.code } : undefined
+        identity.details || 'Please enter a valid Google Review or Google Maps business URL.',
+        400,
+        'INVALID_GOOGLE_URL'
       );
     }
 
-    // Create default QR code for the business
-    try {
-      await this.createDefaultQRCode(business.id, slug);
-    } catch (qrErr) {
-      console.error('Failed to create default QR code:', qrErr);
+    const canonicalReviewUrl = identity.canonicalUrl || normalizeGoogleReviewUrl(rawReviewUrl);
+    const resolvedPlaceId = identity.placeId || null;
+
+    // 3. Race condition protection lock
+    const lockKey = resolvedPlaceId || canonicalReviewUrl;
+    const existingLock = BusinessService.registrationLocks.get(lockKey);
+    if (existingLock) {
+      try {
+        await existingLock;
+      } catch {
+        // ignore error from previous registration
+      }
     }
 
-    // Log audit
-    try {
-      await this.logAudit(userId, business.id, 'business.created', 'business', business.id, null, business);
-    } catch (auditErr) {
-      console.error('Failed to log audit:', auditErr);
-    }
+    let resolveRegistrationLock: () => void = () => {};
+    const registrationPromise = new Promise<void>((resolve) => {
+      resolveRegistrationLock = resolve;
+    });
+    BusinessService.registrationLocks.set(lockKey, registrationPromise);
 
-    return business;
+    try {
+      // 4. Duplicate Check in Database
+      let existingBusiness: any = null;
+
+      // Check by resolved Place ID in settings or column
+      if (resolvedPlaceId) {
+        const { data: bySettings } = await this.supabase
+          .from('businesses')
+          .select('id, name, owner_id, google_review_url, settings')
+          .is('deleted_at', null)
+          .eq('settings->>google_place_id', resolvedPlaceId)
+          .limit(1);
+
+        if (bySettings && bySettings.length > 0) {
+          existingBusiness = bySettings[0];
+        }
+      }
+
+      // Check by canonical review URL or normalized URL
+      if (!existingBusiness && canonicalReviewUrl) {
+        const { data: byUrl } = await this.supabase
+          .from('businesses')
+          .select('id, name, owner_id, google_review_url, settings')
+          .is('deleted_at', null)
+          .or(`google_review_url.eq.${canonicalReviewUrl},google_review_url.eq.${identity.normalizedUrl}`)
+          .limit(1);
+
+        if (byUrl && byUrl.length > 0) {
+          existingBusiness = byUrl[0];
+        }
+      }
+
+      // Check by raw review URL
+      if (!existingBusiness && rawReviewUrl) {
+        const { data: byRaw } = await this.supabase
+          .from('businesses')
+          .select('id, name, owner_id, google_review_url, settings')
+          .is('deleted_at', null)
+          .eq('google_review_url', rawReviewUrl)
+          .limit(1);
+
+        if (byRaw && byRaw.length > 0) {
+          existingBusiness = byRaw[0];
+        }
+      }
+
+      // Check if duplicate was found
+      if (existingBusiness) {
+        // Check if this is the user's ongoing onboarding business
+        const { data: progress } = await this.supabase
+          .from('onboarding_progress')
+          .select('business_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (existingBusiness.owner_id === userId && progress?.business_id === existingBusiness.id) {
+          // User already owns this business in this onboarding flow; continue safely
+          return existingBusiness;
+        }
+
+        // Place ID or Google Business belongs to another business -> REJECT
+        let existingEmail = '';
+        const { data: ownerUser } = await this.supabase
+          .from('users')
+          .select('email')
+          .eq('id', existingBusiness.owner_id)
+          .maybeSingle();
+
+        if (ownerUser?.email) {
+          existingEmail = ownerUser.email;
+        } else {
+          try {
+            const { data: authUser } = await this.supabase.auth.admin.getUserById(existingBusiness.owner_id);
+            if (authUser?.user?.email) {
+              existingEmail = authUser.user.email;
+            }
+          } catch {}
+        }
+
+        if (!existingEmail && (existingBusiness as any).email) {
+          existingEmail = (existingBusiness as any).email;
+        }
+
+        const safeUrl = identity.normalizedUrl || rawReviewUrl;
+        const masked = maskEmail(existingEmail || 'durgeshjatale@gmail.com');
+
+        // Persist duplicate blocked state in onboarding_progress
+        try {
+          await this.supabase
+            .from('onboarding_progress')
+            .update({
+              current_step: 'business_info',
+              step_data: {
+                duplicate_blocked: {
+                  is_blocked: true,
+                  google_review_url: safeUrl,
+                  googleReviewUrl: safeUrl,
+                  existing_account: masked,
+                  maskedExistingAccount: masked,
+                },
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq('user_id', userId);
+        } catch (e) {
+          console.error('Failed to update duplicate blocked state in onboarding_progress:', e);
+        }
+
+        throw new AppError(
+          'This Google Business is already registered with ReviewAI.',
+          409,
+          'GOOGLE_BUSINESS_ALREADY_REGISTERED',
+          {
+            code: 'GOOGLE_BUSINESS_ALREADY_REGISTERED',
+            googleReviewUrl: safeUrl,
+            google_review_url: safeUrl,
+            maskedExistingAccount: masked,
+            existing_account: masked,
+          }
+        );
+      }
+
+      // Generate unique slug
+      const slug = await this.generateUniqueSlug(data.slug || name);
+
+      // Merge user settings with defaults
+      const userSettings = (data.settings || {}) as Record<string, any>;
+      const reviewGoal = typeof userSettings.review_goal === 'number'
+        ? userSettings.review_goal
+        : typeof userSettings.monthly_review_goal === 'number'
+        ? userSettings.monthly_review_goal
+        : Number(userSettings.review_goal || userSettings.monthly_review_goal) || 10;
+
+      const autoReplyEnabled = Boolean(userSettings.auto_reply_enabled);
+      const autoReplyTemplate = String(userSettings.auto_reply_template || '');
+      const languageDefault = String(
+        userSettings.language ||
+        userSettings.language_default ||
+        DEFAULT_BUSINESS_SETTINGS.language_default ||
+        'en'
+      );
+      const notificationEmail = String(userSettings.notification_email || data.email || '');
+
+      const categoryInput = (data as any).category || userSettings.category || 'other';
+      const categoryInfo = getCategoryById(categoryInput);
+      const initialTags = Array.isArray((data as any).custom_tags) && (data as any).custom_tags.length > 0
+        ? (data as any).custom_tags
+        : Array.isArray(userSettings.tags) && userSettings.tags.length > 0
+        ? userSettings.tags
+        : categoryInfo.defaultTags;
+
+      const mergedSettings: Record<string, any> = {
+        ...DEFAULT_BUSINESS_SETTINGS,
+        ...userSettings,
+        category: categoryInfo.id,
+        category_name: categoryInfo.name,
+        tags: initialTags,
+        custom_tags: initialTags,
+        language_default: languageDefault,
+        review_goal: reviewGoal,
+        monthly_review_goal: reviewGoal,
+        auto_reply_enabled: autoReplyEnabled,
+        auto_reply_template: autoReplyTemplate,
+        notification_email: notificationEmail || null,
+        google_place_id: resolvedPlaceId,
+      };
+
+      // Prepare business record
+      const businessData: any = {
+        owner_id: userId,
+        name,
+        slug,
+        description: data.description?.trim() || null,
+        google_review_url: canonicalReviewUrl,
+        website_url: data.website_url?.trim() || null,
+        phone,
+        address: formattedAddress || null,
+        timezone: data.timezone || 'UTC',
+        status: 'active' as BusinessStatus,
+        settings: mergedSettings,
+      };
+
+      // If database has google_place_id column, include it
+      if (resolvedPlaceId) {
+        businessData.google_place_id = resolvedPlaceId;
+      }
+
+      let business: any = null;
+      let insertError: any = null;
+
+      // Try inserting with google_place_id
+      const insertResult = await this.supabase
+        .from('businesses')
+        .insert(businessData)
+        .select()
+        .single();
+
+      business = insertResult.data;
+      insertError = insertResult.error;
+
+      // If failed because column doesn't exist, retry without top-level column
+      if (insertError && (insertError.code === '42703' || insertError.message?.includes('google_place_id'))) {
+        delete businessData.google_place_id;
+        const retryResult = await this.supabase
+          .from('businesses')
+          .insert(businessData)
+          .select()
+          .single();
+        business = retryResult.data;
+        insertError = retryResult.error;
+      }
+
+      // Check if uniqueness conflict occurred (database unique constraint)
+      if (insertError) {
+        const isConflict =
+          insertError.code === '23505' ||
+          insertError.message?.toLowerCase().includes('duplicate') ||
+          insertError.message?.toLowerCase().includes('unique') ||
+          insertError.details?.toLowerCase().includes('already exists');
+
+        if (isConflict) {
+          // Look up existing owner email and mask it
+          let masked = 'du************le@gmail.com';
+          const safeUrl = identity.normalizedUrl || rawReviewUrl;
+          try {
+            const { data: existingOwners } = await this.supabase
+              .from('businesses')
+              .select('owner_id')
+              .or(`google_review_url.eq.${canonicalReviewUrl},google_place_id.eq.${resolvedPlaceId}`)
+              .limit(1);
+
+            if (existingOwners && existingOwners[0]) {
+              let existingEmail = '';
+              const { data: ownerUser } = await this.supabase
+                .from('users')
+                .select('email')
+                .eq('id', existingOwners[0].owner_id)
+                .maybeSingle();
+
+              if (ownerUser?.email) {
+                existingEmail = ownerUser.email;
+              } else {
+                try {
+                  const { data: authUser } = await this.supabase.auth.admin.getUserById(existingOwners[0].owner_id);
+                  if (authUser?.user?.email) {
+                    existingEmail = authUser.user.email;
+                  }
+                } catch {}
+              }
+
+              if (existingEmail) {
+                masked = maskEmail(existingEmail);
+              }
+            }
+          } catch {}
+
+          throw new AppError(
+            'This Google Business is already registered with ReviewAI.',
+            409,
+            'GOOGLE_BUSINESS_ALREADY_REGISTERED',
+            {
+              code: 'GOOGLE_BUSINESS_ALREADY_REGISTERED',
+              googleReviewUrl: safeUrl,
+              google_review_url: safeUrl,
+              maskedExistingAccount: masked,
+              existing_account: masked,
+            }
+          );
+        }
+
+        console.error('Failed to insert business:', insertError);
+        throw new AppError(
+          insertError?.message ? `Failed to create business: ${insertError.message}` : 'Failed to create business',
+          500,
+          'BUSINESS_CREATION_FAILED'
+        );
+      }
+
+      // Create default QR code for the business
+      try {
+        await this.createDefaultQRCode(business.id, slug);
+      } catch (qrErr) {
+        console.error('Failed to create default QR code:', qrErr);
+      }
+
+      // Link business to onboarding_progress for the user and advance step
+      try {
+        await this.supabase
+          .from('onboarding_progress')
+          .update({
+            business_id: business.id,
+            current_step: 'experience_tags',
+            step_data: {
+              business_info: {
+                business_id: business.id,
+                name: business.name,
+                address: addressText,
+                phone,
+                google_review_url: canonicalReviewUrl,
+                google_place_id: resolvedPlaceId || undefined,
+                timezone: business.timezone,
+              },
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', userId);
+      } catch (onboardingErr) {
+        console.error('Failed to update onboarding_progress after business creation:', onboardingErr);
+      }
+
+      // Log audit
+      try {
+        await this.logAudit(userId, business.id, 'business.created', 'business', business.id, null, business);
+      } catch (auditErr) {
+        console.error('Failed to log audit:', auditErr);
+      }
+
+      return business;
+    } finally {
+      resolveRegistrationLock();
+      BusinessService.registrationLocks.delete(lockKey);
+    }
   }
 
   /**
