@@ -14,7 +14,7 @@
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {
-    "build": "tsc && cp src/styles.css dist/",
+    "build": "tsc && node -e \"fs.copyFileSync('src/styles.css', 'dist/styles.css')\"",
     "dev": "tsc --watch",
     "lint": "eslint src",
     "type-check": "tsc --noEmit"

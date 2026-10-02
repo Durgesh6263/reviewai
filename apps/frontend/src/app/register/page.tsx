@@ -15,11 +15,22 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { toast } from 'react-hot-toast';
 
 const registerSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  email: z.string().email('Invalid email address').max(255),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password must not exceed 128 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[^A-Za-z0-9]/, 'Password must contain at least one special character (e.g. !@#$%^&*)'),
   confirmPassword: z.string(),
-  full_name: z.string().min(2, 'Name must be at least 2 characters'),
-  business_name: z.string().min(2, 'Business name must be at least 2 characters').optional(),
+  full_name: z
+    .string()
+    .min(2, 'Name must be at least 2 characters')
+    .max(255, 'Name must not exceed 255 characters')
+    .regex(/^[a-zA-Z\s\-'.]+$/, 'Name contains invalid characters'),
+  business_name: z.string().trim().optional().or(z.literal('')),
   terms: z.boolean().refine(val => val === true, 'You must accept the terms and conditions'),
 }).refine(data => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
@@ -34,7 +45,6 @@ function RegisterForm() {
   const { register: registerUser, isLoading: authLoading } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [passwordStrength, setPasswordStrength] = useState(0);
 
   const redirect = searchParams.get('redirect') || '/dashboard';
 
@@ -42,6 +52,7 @@ function RegisterForm() {
     register,
     handleSubmit,
     watch,
+    setError,
     formState: { errors },
   } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
@@ -55,18 +66,15 @@ function RegisterForm() {
     },
   });
 
-  const password = watch('password');
+  const password = watch('password') || '';
 
-  // Calculate password strength
-  useState(() => {
-    let strength = 0;
-    if (password.length >= 8) strength += 1;
-    if (/[A-Z]/.test(password)) strength += 1;
-    if (/[a-z]/.test(password)) strength += 1;
-    if (/[0-9]/.test(password)) strength += 1;
-    if (/[^A-Za-z0-9]/.test(password)) strength += 1;
-    setPasswordStrength(strength);
-  });
+  const hasMinLength = password.length >= 8;
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+
+  const strength = [hasMinLength, hasUpper, hasLower, hasNumber, hasSpecial].filter(Boolean).length;
 
   const onSubmit = async (data: RegisterForm) => {
     setIsSubmitting(true);
@@ -75,13 +83,27 @@ function RegisterForm() {
         email: data.email,
         password: data.password,
         full_name: data.full_name,
-        business_name: data.business_name,
+        business_name: data.business_name || undefined,
       });
       toast.success('Account created successfully!');
       router.push(redirect);
       router.refresh();
     } catch (error: any) {
       const errData = error.response?.data;
+      if (errData?.details) {
+        let hasSetField = false;
+        Object.entries(errData.details).forEach(([field, val]: [string, any]) => {
+          const fieldMsg = Array.isArray(val) ? val.join('. ') : typeof val === 'string' ? val : '';
+          if (fieldMsg) {
+            if (field === 'password' || field === 'email' || field === 'full_name' || field === 'business_name') {
+              setError(field as any, { message: fieldMsg });
+              hasSetField = true;
+            }
+            toast.error(fieldMsg);
+          }
+        });
+        if (hasSetField) return;
+      }
       const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Registration failed. Please try again.';
       const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
       toast.error(message);
@@ -90,17 +112,19 @@ function RegisterForm() {
     }
   };
 
-  const getStrengthColor = (strength: number) => {
-    if (strength <= 1) return 'bg-error-500';
-    if (strength <= 2) return 'bg-warning-500';
-    if (strength <= 3) return 'bg-primary-500';
+  const getStrengthColor = (s: number) => {
+    if (s <= 1) return 'bg-error-500';
+    if (s <= 2) return 'bg-warning-500';
+    if (s <= 3) return 'bg-primary-500';
+    if (s <= 4) return 'bg-blue-500';
     return 'bg-success-500';
   };
 
-  const getStrengthLabel = (strength: number) => {
-    if (strength <= 1) return 'Weak';
-    if (strength <= 2) return 'Fair';
-    if (strength <= 3) return 'Good';
+  const getStrengthLabel = (s: number) => {
+    if (s <= 1) return 'Weak';
+    if (s <= 2) return 'Fair';
+    if (s <= 3) return 'Good';
+    if (s <= 4) return 'Very Good';
     return 'Strong';
   };
 
@@ -198,17 +222,6 @@ function RegisterForm() {
                     {...register('password')}
                     disabled={isSubmitting || authLoading}
                     autoComplete="new-password"
-                    onChange={(e) => {
-                      register('password').onChange(e);
-                      const pwd = e.target.value;
-                      let strength = 0;
-                      if (pwd.length >= 8) strength += 1;
-                      if (/[A-Z]/.test(pwd)) strength += 1;
-                      if (/[a-z]/.test(pwd)) strength += 1;
-                      if (/[0-9]/.test(pwd)) strength += 1;
-                      if (/[^A-Za-z0-9]/.test(pwd)) strength += 1;
-                      setPasswordStrength(strength);
-                    }}
                   />
                   <button
                     type="button"
@@ -219,17 +232,44 @@ function RegisterForm() {
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
                 </div>
+
                 {password && (
-                  <div className="space-y-1">
-                    <div className="h-1.5 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-300 ${getStrengthColor(passwordStrength)}`}
-                        style={{ width: `${(passwordStrength / 5) * 100}%` }}
-                      />
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <div className="h-1.5 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${getStrengthColor(strength)}`}
+                          style={{ width: `${(strength / 5) * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between items-center text-xs text-secondary-500">
+                        <span>Password strength: <span className="font-medium text-secondary-700 dark:text-secondary-300">{getStrengthLabel(strength)}</span></span>
+                        <span>{strength}/5 criteria</span>
+                      </div>
                     </div>
-                    <p className="text-xs text-secondary-500">
-                      Password strength: <span className="font-medium">{getStrengthLabel(passwordStrength)}</span>
-                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 text-xs">
+                      <div className={`flex items-center gap-1.5 ${hasMinLength ? 'text-emerald-500 dark:text-emerald-400' : 'text-secondary-400'}`}>
+                        <CheckCircle2 className={`w-3.5 h-3.5 ${hasMinLength ? 'text-emerald-500' : 'opacity-30'}`} />
+                        <span>At least 8 characters</span>
+                      </div>
+                      <div className={`flex items-center gap-1.5 ${hasUpper ? 'text-emerald-500 dark:text-emerald-400' : 'text-secondary-400'}`}>
+                        <CheckCircle2 className={`w-3.5 h-3.5 ${hasUpper ? 'text-emerald-500' : 'opacity-30'}`} />
+                        <span>Uppercase letter (A-Z)</span>
+                      </div>
+                      <div className={`flex items-center gap-1.5 ${hasLower ? 'text-emerald-500 dark:text-emerald-400' : 'text-secondary-400'}`}>
+                        <CheckCircle2 className={`w-3.5 h-3.5 ${hasLower ? 'text-emerald-500' : 'opacity-30'}`} />
+                        <span>Lowercase letter (a-z)</span>
+                      </div>
+                      <div className={`flex items-center gap-1.5 ${hasNumber ? 'text-emerald-500 dark:text-emerald-400' : 'text-secondary-400'}`}>
+                        <CheckCircle2 className={`w-3.5 h-3.5 ${hasNumber ? 'text-emerald-500' : 'opacity-30'}`} />
+                        <span>At least 1 number (0-9)</span>
+                      </div>
+                      <div className={`flex items-center gap-1.5 sm:col-span-2 ${hasSpecial ? 'text-emerald-500 dark:text-emerald-400' : 'text-secondary-400'}`}>
+                        <CheckCircle2 className={`w-3.5 h-3.5 ${hasSpecial ? 'text-emerald-500' : 'opacity-30'}`} />
+                        <span>Special character (!@#$%^&*)</span>
+                      </div>
+                    </div>
                   </div>
                 )}
                 {errors.password && (

@@ -191,8 +191,20 @@ export class AuthMiddleware {
       });
 
       if (!result.success) {
-        const errors = result.error.flatten();
-        throw new AppError('Validation failed', 400, 'VALIDATION_ERROR', errors.fieldErrors);
+        const issues = result.error.issues;
+        const fieldErrors: Record<string, string[]> = {
+          ...result.error.flatten().fieldErrors,
+        };
+        for (const issue of issues) {
+          const field = issue.path.length > 1 ? issue.path.slice(1).join('.') : issue.path.join('.') || 'general';
+          if (!fieldErrors[field]) fieldErrors[field] = [];
+          if (!fieldErrors[field].includes(issue.message)) {
+            fieldErrors[field].push(issue.message);
+          }
+        }
+        const errorMessages = issues.map((i: any) => i.message).filter(Boolean);
+        const detailedMessage = errorMessages.length > 0 ? errorMessages.join('. ') : 'Validation failed';
+        throw new AppError(detailedMessage, 400, 'VALIDATION_ERROR', fieldErrors);
       }
 
       // Attach validated data without clobbering unvalidated objects if not present in schema
