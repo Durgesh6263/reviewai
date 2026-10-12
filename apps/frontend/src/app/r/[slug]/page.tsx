@@ -120,6 +120,7 @@ export default function PublicReviewPage() {
   const [isTimeoutError, setIsTimeoutError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isSlowLoading, setIsSlowLoading] = useState(false);
 
   // Review Flow State
   const [language, setLanguage] = useState<string>('en');
@@ -150,7 +151,7 @@ export default function PublicReviewPage() {
 
   // Fetch public business info (No auth needed, deduplicated via sessionStorage & AbortController)
   useEffect(() => {
-    if (!slug) return;
+    if (!normalizedSlug) return;
     // Only show full spinner if no cached business is already displaying
     if (!business) {
       setIsLoading(true);
@@ -174,22 +175,31 @@ export default function PublicReviewPage() {
     let isMounted = true;
     const abortController = new AbortController();
 
-    const querySlug = encodeURIComponent(normalizedSlug || slug);
+    const querySlug = encodeURIComponent(normalizedSlug);
     const queryUrl = cachedScanId ? `/r/${querySlug}?scan_id=${encodeURIComponent(cachedScanId)}` : `/r/${querySlug}`;
 
-    // 8s watchdog timeout: guarantee loading state NEVER hangs indefinitely
+    // Slow connection notice timer (3.5s) to inform mobile users without premature abort
+    const slowNoticeTimer = setTimeout(() => {
+      if (isMounted && !business) {
+        setIsSlowLoading(true);
+      }
+    }, 3500);
+
+    // Watchdog timeout (15s): prevents infinite hangs while accommodating cellular latency & serverless wakeups
     const timeoutTimer = setTimeout(() => {
       if (isMounted) {
         abortController.abort();
         setIsTimeoutError(true);
         setLoadError('Loading took longer than expected. Please check your connection and try again.');
         setIsLoading(false);
+        setIsRetrying(false);
       }
-    }, 8000);
+    }, 15000);
 
-    api.get<any>(queryUrl, { signal: abortController.signal, timeout: 8000 })
+    api.get<any>(queryUrl, { signal: abortController.signal, timeout: 15000 })
       .then((res: any) => {
         if (!isMounted) return;
+        clearTimeout(slowNoticeTimer);
         clearTimeout(timeoutTimer);
         const b = res?.data?.business || res?.business || res?.data || res;
         if (!b) {
@@ -210,6 +220,7 @@ export default function PublicReviewPage() {
       })
       .catch((err: any) => {
         if (!isMounted) return;
+        clearTimeout(slowNoticeTimer);
         clearTimeout(timeoutTimer);
 
         if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') {
@@ -235,26 +246,28 @@ export default function PublicReviewPage() {
       })
       .finally(() => {
         if (isMounted) {
+          clearTimeout(slowNoticeTimer);
           clearTimeout(timeoutTimer);
           setIsLoading(false);
+          setIsRetrying(false);
         }
       });
 
     return () => {
       isMounted = false;
+      clearTimeout(slowNoticeTimer);
       clearTimeout(timeoutTimer);
       abortController.abort();
     };
-  }, [slug, rawSlug, normalizedSlug, retryCount]);
+  }, [normalizedSlug, retryCount]);
 
   const handleRetry = () => {
     if (isRetrying) return;
     setIsRetrying(true);
-    setIsLoading(true);
     setLoadError(null);
     setIsTimeoutError(false);
+    setIsSlowLoading(false);
     setRetryCount((prev) => prev + 1);
-    setTimeout(() => setIsRetrying(false), 1000);
   };
 
   // Helper to start or retrieve session in database (idempotent & cached)
@@ -510,26 +523,39 @@ export default function PublicReviewPage() {
     }, 2500);
   };
 
-  if (isLoading) {
+  if (isLoading && !business && !isRetrying) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4">
-        <div className="text-center">
-          <Loader2 className="h-10 w-10 text-primary-600 animate-spin mx-auto mb-3" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Loading business review page...</p>
+        <div className="text-center space-y-3">
+          <Loader2 className="h-10 w-10 text-primary-600 animate-spin mx-auto" />
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            {isSlowLoading ? 'Connecting to business review system...' : 'Loading business review page...'}
+          </p>
+          {isSlowLoading && (
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Establishing secure connection, please hold on...
+            </p>
+          )}
         </div>
       </div>
     );
   }
 
   if (loadError || !business) {
-    const isExpired = loadError?.toLowerCase().includes('expired');
-    const isQuotaExhausted = loadError?.toLowerCase().includes('quota') || loadError?.toLowerCase().includes('limit');
-    const isRetryable = isTimeoutError ||
+    const isExpired =
+      loadError?.toLowerCase().includes('expired') ||
+      loadError?.toLowerCase().includes('inactive');
+    const isQuotaExhausted =
+      loadError?.toLowerCase().includes('quota') ||
+      loadError?.toLowerCase().includes('limit');
+    const isRetryable = !isExpired && !isQuotaExhausted && (
+      isTimeoutError ||
       loadError?.toLowerCase().includes('connection') ||
       loadError?.toLowerCase().includes('network') ||
       loadError?.toLowerCase().includes('try again') ||
       loadError?.toLowerCase().includes('timeout') ||
-      loadError?.toLowerCase().includes('longer than expected');
+      loadError?.toLowerCase().includes('longer than expected')
+    );
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 py-8">
@@ -555,10 +581,11 @@ export default function PublicReviewPage() {
             {isRetryable ? (
               <Button
                 onClick={handleRetry}
+                disabled={isRetrying}
                 className="w-full flex items-center justify-center gap-2"
               >
-                <RefreshCw className="w-4 h-4" />
-                Try Again
+                <RefreshCw className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+                {isRetrying ? 'Reconnecting...' : 'Try Again'}
               </Button>
             ) : (
               <p className="text-xs text-slate-500">

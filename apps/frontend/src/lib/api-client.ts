@@ -3,15 +3,22 @@ import { useAuth } from '@/lib/auth-provider';
 import { safeLocalStorage } from '@/lib/storage';
 
 const getApiBaseUrl = () => {
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    const envUrl = process.env.NEXT_PUBLIC_API_URL.trim();
-    return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl}/api/v1`;
-  }
   if (typeof window !== 'undefined') {
-    // If accessing from a mobile device, local network IP, or public tunnel (non-localhost)
+    // When executing in a browser on any production or deployed domain,
+    // always use same-origin relative URL /api/v1. Next.js rewrites in next.config.js
+    // proxy this to the backend server-to-server.
+    // This completely eliminates:
+    // 1. Cross-Origin Resource Sharing (CORS) preflight round-trips
+    // 2. Safari / WebKit Cross-Origin-Resource-Policy (CORP) blocking
+    // 3. iOS Safari ITP (Intelligent Tracking Prevention) third-party network restrictions
+    // 4. Mobile carrier DNS & content-filtering blocks on cloud hosting domains
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
       return '/api/v1';
     }
+  }
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    const envUrl = process.env.NEXT_PUBLIC_API_URL.trim();
+    return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl}/api/v1`;
   }
   return 'http://localhost:4000/api/v1';
 };
@@ -66,14 +73,40 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       async (error: AxiosError) => {
-        const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+        const originalRequest = error.config as (InternalAxiosRequestConfig & { _retry?: boolean; _retryCount?: number }) | undefined;
+        if (!originalRequest) {
+          return Promise.reject(error);
+        }
 
-        // Don't retry auth or public customer review endpoints
-        if (
-          originalRequest.url?.includes('/auth/') ||
+        const isPublicReviewRoute =
           originalRequest.url?.includes('/r/') ||
-          originalRequest.url?.includes('/review/')
-        ) {
+          originalRequest.url?.includes('/review/');
+
+        // For public customer review routes: handle transient network/5xx drops with one fast retry
+        if (isPublicReviewRoute) {
+          // Do NOT retry 4xx errors (e.g. 403 SUBSCRIPTION_EXPIRED, 404 BUSINESS_NOT_FOUND)
+          if (error.response && error.response.status >= 400 && error.response.status < 500) {
+            return Promise.reject(error);
+          }
+
+          const retryCount = (originalRequest as any)._retryCount || 0;
+          const isTransientNetworkError =
+            !error.response ||
+            error.response.status >= 500 ||
+            error.code === 'ECONNABORTED' ||
+            error.message === 'Network Error';
+
+          if (isTransientNetworkError && retryCount < 1) {
+            (originalRequest as any)._retryCount = retryCount + 1;
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            return this.client(originalRequest);
+          }
+
+          return Promise.reject(error);
+        }
+
+        // Don't retry auth endpoints
+        if (originalRequest.url?.includes('/auth/')) {
           return Promise.reject(error);
         }
 

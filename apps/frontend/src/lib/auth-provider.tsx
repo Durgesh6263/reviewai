@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { onboardingTracker } from '@/lib/onboarding-tracker';
+import { safeLocalStorage } from '@/lib/storage';
 import type { User } from '@reviewai/types';
 
 interface AuthTokens {
@@ -43,12 +44,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isAuthenticated = !!user && !!tokens?.access_token;
 
-  // Initialize auth state from localStorage
+  // Initialize auth state safely from safeLocalStorage
   useEffect(() => {
     const initAuth = async () => {
+      // Public customer & marketing routes must NEVER block initial rendering or make auth network requests
+      const isPublicPath = typeof window !== 'undefined' && (
+        window.location.pathname === '/' ||
+        window.location.pathname === '/pricing' ||
+        window.location.pathname.startsWith('/r/') ||
+        window.location.pathname.startsWith('/review/') ||
+        window.location.pathname.startsWith('/terms') ||
+        window.location.pathname.startsWith('/privacy')
+      );
+
+      if (isPublicPath) {
+        try {
+          const storedTokens = safeLocalStorage.getItem('auth_tokens');
+          const storedUser = safeLocalStorage.getItem('auth_user');
+          if (storedTokens && storedUser) {
+            setTokens(JSON.parse(storedTokens));
+            setUser(JSON.parse(storedUser));
+          }
+        } catch {}
+        setIsLoading(false);
+        return;
+      }
+
       try {
-        const storedTokens = localStorage.getItem('auth_tokens');
-        const storedUser = localStorage.getItem('auth_user');
+        const storedTokens = safeLocalStorage.getItem('auth_tokens');
+        const storedUser = safeLocalStorage.getItem('auth_user');
 
         if (storedTokens && storedUser) {
           const parsedTokens = JSON.parse(storedTokens);
@@ -65,11 +89,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 refresh_token: parsedTokens.refresh_token,
               }) as { success: boolean; data: AuthTokens };
               const newTokens = response.data;
-              localStorage.setItem('auth_tokens', JSON.stringify(newTokens));
+              safeLocalStorage.setItem('auth_tokens', JSON.stringify(newTokens));
               setTokens(newTokens);
               setUser(parsedUser);
             } catch {
-              // Refresh failed, clear auth
+              // Refresh failed, clear auth safely
               clearAuth();
             }
           } else {
@@ -83,7 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } finally {
         setIsLoading(false);
 
-        // Check onboarding after auth init
+        // Check onboarding only on non-public routes
         if (typeof window !== 'undefined') {
           checkOnboardingRedirect(window.location.pathname);
         }
@@ -108,8 +132,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, isLoading]);
 
   const clearAuth = () => {
-    localStorage.removeItem('auth_tokens');
-    localStorage.removeItem('auth_user');
+    try {
+      safeLocalStorage.removeItem('auth_tokens');
+      safeLocalStorage.removeItem('auth_user');
+    } catch {}
     setTokens(null);
     setUser(null);
   };
@@ -118,10 +144,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const checkOnboardingRedirect = async (pathname: string) => {
     if (!user || isLoading) return;
 
-    // Skip onboarding check for admin users and these paths
+    // Skip onboarding check for admin users and all public pages
     if (user.role === 'admin') return;
-    const skipPaths = ['/login', '/register', '/forgot-password', '/verify-email', '/reset-password', '/onboarding', '/r/', '/admin'];
-    if (skipPaths.some(p => pathname.startsWith(p))) return;
+    const skipPaths = [
+      '/',
+      '/pricing',
+      '/login',
+      '/register',
+      '/forgot-password',
+      '/verify-email',
+      '/reset-password',
+      '/onboarding',
+      '/r/',
+      '/admin',
+      '/terms',
+      '/privacy',
+    ];
+    if (skipPaths.some(p => p === pathname || (p.length > 1 && pathname.startsWith(p)))) return;
 
     try {
       const progress = await onboardingTracker.getProgress();
@@ -146,8 +185,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ...newTokens,
       expires_at: newTokens.expires_at || (Date.now() + ((newTokens as any).expires_in || 900) * 1000),
     };
-    localStorage.setItem('auth_tokens', JSON.stringify(tokensWithExpiry));
-    localStorage.setItem('auth_user', JSON.stringify(newUser));
+    safeLocalStorage.setItem('auth_tokens', JSON.stringify(tokensWithExpiry));
+    safeLocalStorage.setItem('auth_user', JSON.stringify(newUser));
     setTokens(tokensWithExpiry);
     setUser(newUser);
   };
@@ -195,7 +234,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refresh_token: tokens.refresh_token,
     });
     const newTokens = response.data;
-    localStorage.setItem('auth_tokens', JSON.stringify(newTokens));
+    safeLocalStorage.setItem('auth_tokens', JSON.stringify(newTokens));
     setTokens(newTokens);
   };
 
@@ -205,14 +244,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const response = await api.get<{ success: boolean; data: User }>('/auth/me');
     const newUser = response.data;
-    localStorage.setItem('auth_user', JSON.stringify(newUser));
+    safeLocalStorage.setItem('auth_user', JSON.stringify(newUser));
     setUser(newUser);
   };
 
   const updateUser = (updatedUser: Partial<User>) => {
     if (user) {
       const newUser = { ...user, ...updatedUser };
-      localStorage.setItem('auth_user', JSON.stringify(newUser));
+      safeLocalStorage.setItem('auth_user', JSON.stringify(newUser));
       setUser(newUser);
     }
   };
