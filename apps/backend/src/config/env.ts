@@ -33,10 +33,13 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   DEFAULT_AI_PROVIDER: z.enum(['openai', 'gemini']).default('openai'),
 
-  // Billing (optional in MVP pilot)
+  // Billing (Stripe & Razorpay)
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
+  RAZORPAY_KEY_ID: z.string().default('rzp_test_reviewai_dev'),
+  RAZORPAY_KEY_SECRET: z.string().default('rzp_secret_reviewai_dev_123'),
+  RAZORPAY_WEBHOOK_SECRET: z.string().default('rzp_whsec_reviewai_dev_123'),
 
   // Email (optional in dev)
   RESEND_API_KEY: z.string().optional(),
@@ -44,7 +47,7 @@ const envSchema = z.object({
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
-  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(1000),
 
   // Observability
   LOG_LEVEL: z.string().default('info'),

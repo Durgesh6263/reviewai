@@ -3,10 +3,12 @@ import { AdminService } from './service';
 import { AuthenticatedRequest } from '../auth/middleware';
 import { validate } from '../../shared/utils/validation';
 import { z } from 'zod';
+import { AuthorizationError } from '../../shared/exceptions';
 import {
   AdminFeedbackListQuerySchema,
   AdminFeedbackUpdateSchema,
 } from './types';
+import { planConfigService } from './plan-config-service';
 
 export class AdminController {
   constructor(private adminService: AdminService) {}
@@ -33,8 +35,12 @@ export class AdminController {
 
   async updateUpgradeRequestStatus(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
+      if (req.user?.role !== 'admin') {
+        throw new AuthorizationError('Admin privileges required to update upgrade requests');
+      }
       const { id } = req.params;
-      const { status, admin_notes } = req.body;
+      const { status } = req.body;
+      const admin_notes = req.body.admin_notes || req.body.admin_note;
       const adminId = req.user!.sub;
       const request = await this.adminService.updateUpgradeRequestStatus(id, status, adminId, admin_notes);
       res.json({ success: true, data: request });
@@ -137,7 +143,7 @@ export class AdminController {
 
   async getSubscriptionStats(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const stats = await this.adminService.getSubscriptionStats();
+      const stats = await this.adminService.getSubscriptionStats(req.query as any);
       res.json({ success: true, data: stats });
     } catch (error) {
       next(error);
@@ -147,8 +153,17 @@ export class AdminController {
   async updateSubscription(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { plan } = req.body;
-      const subscription = await this.adminService.updateSubscriptionPlan(id, plan);
+      const { plan, duration_months, version_number, monthly_qr_limit, monthly_ai_limit, preserve_usage } = req.body;
+      const duration = duration_months ? (Number(duration_months) as 1 | 6 | 12) : 6;
+      const adminUserId = req.user?.sub || 'admin';
+      const subscription = await this.adminService.updateSubscriptionPlan(
+        id, 
+        plan, 
+        duration, 
+        version_number, 
+        adminUserId,
+        { monthly_qr_limit, monthly_ai_limit, preserve_usage }
+      );
       res.json({ success: true, data: subscription });
     } catch (error) {
       next(error);
@@ -389,6 +404,17 @@ export class AdminController {
     }
   }
 
+  // Section 4C: Delete User (Admin permanent deletion & complete cascade)
+  async deleteUser(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const result = await this.adminService.deleteUser(req.user!.sub, id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // Section 5: Platform Feature Usage
   async getPlatformUsage(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
@@ -425,6 +451,133 @@ export class AdminController {
       const q = (req.query.q as string) || '';
       const result = await this.adminService.globalSearch(q);
       res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Plan & Trial Configuration
+  async getPlans(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const plans = await planConfigService.getPlans();
+      res.json({ success: true, data: plans });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async createPlan(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const adminUserId = req.user?.sub || 'admin';
+      const newPlan = await planConfigService.createPlan(req.body, adminUserId);
+      res.status(201).json({ success: true, data: newPlan, message: 'Plan created successfully' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async checkPlanReferences(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId } = req.params;
+      const versionNumber = req.query.versionNumber ? parseInt(req.query.versionNumber as string, 10) : undefined;
+      const refs = await planConfigService.checkPlanReferences(planId, versionNumber);
+      res.json({ success: true, data: refs });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deletePlan(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId } = req.params;
+      const forceArchive = req.query.forceArchive === 'true' || req.body?.forceArchive === true || req.body?.archive === true;
+      const adminUserId = req.user?.sub || 'admin';
+      const result = await planConfigService.deletePlan(planId, { forceArchive }, adminUserId);
+      res.json({ success: true, data: result, message: result.message });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deletePlanVersion(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId, versionNumber } = req.params;
+      const forceArchive = req.query.forceArchive === 'true' || req.body?.forceArchive === true;
+      const adminUserId = req.user?.sub || 'admin';
+      const result = await planConfigService.deletePlanVersion(planId, parseInt(versionNumber, 10), { forceArchive }, adminUserId);
+      res.json({ success: true, data: result, message: result.message });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updatePlanMetadata(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId } = req.params;
+      const adminUserId = req.user?.sub || 'admin';
+      const updated = await planConfigService.updatePlanMetadata(planId, req.body, adminUserId);
+      res.json({ success: true, data: updated, message: 'Plan metadata updated successfully' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async createPlanVersion(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId } = req.params;
+      const adminUserId = req.user?.sub || 'admin';
+      const version = await planConfigService.createPlanVersion(planId, req.body, adminUserId);
+      res.status(201).json({ success: true, data: version, message: 'Plan version created successfully' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async publishPlanVersion(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId, versionNumber } = req.params;
+      const adminUserId = req.user?.sub || 'admin';
+      const version = await planConfigService.publishPlanVersion(planId, parseInt(versionNumber, 10), adminUserId);
+      res.json({ success: true, data: version, message: `Version ${versionNumber} published as active` });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async archivePlanVersion(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { planId, versionNumber } = req.params;
+      const adminUserId = req.user?.sub || 'admin';
+      const version = await planConfigService.archivePlanVersion(planId, parseInt(versionNumber, 10), adminUserId);
+      res.json({ success: true, data: version, message: `Version ${versionNumber} archived` });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getTrialConfig(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const config = await planConfigService.getTrialConfig();
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateTrialConfig(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const adminUserId = req.user?.sub || 'admin';
+      const updated = await planConfigService.updateTrialConfig(req.body, adminUserId);
+      res.json({ success: true, data: updated, message: 'Trial configuration updated successfully' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getTrialConfigHistory(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const history = await planConfigService.getTrialConfigHistory();
+      res.json({ success: true, data: history });
     } catch (error) {
       next(error);
     }

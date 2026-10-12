@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import { useAuth } from '@/lib/auth-provider';
+import { safeLocalStorage } from '@/lib/storage';
 
 const getApiBaseUrl = () => {
   if (process.env.NEXT_PUBLIC_API_URL) {
@@ -22,6 +23,7 @@ class ApiClient {
   constructor() {
     this.client = axios.create({
       baseURL: getApiBaseUrl(),
+      timeout: 12000,
       headers: {
         'Content-Type': 'application/json',
       },
@@ -35,12 +37,25 @@ class ApiClient {
     // Request interceptor - add auth token
     this.client.interceptors.request.use(
       (config: InternalAxiosRequestConfig) => {
-        const tokens = localStorage.getItem('auth_tokens');
-        if (tokens) {
-          const parsed = JSON.parse(tokens);
-          if (parsed.access_token) {
-            config.headers.Authorization = `Bearer ${parsed.access_token}`;
+        // Skip auth tokens for public QR and review routes
+        if (
+          config.url?.includes('/r/') ||
+          config.url?.includes('/review/sessions') ||
+          config.url?.includes('/review/submit')
+        ) {
+          return config;
+        }
+
+        try {
+          const tokens = safeLocalStorage.getItem('auth_tokens');
+          if (tokens) {
+            const parsed = JSON.parse(tokens);
+            if (parsed.access_token) {
+              config.headers.Authorization = `Bearer ${parsed.access_token}`;
+            }
           }
+        } catch {
+          // Safeguard against token parsing errors
         }
         return config;
       },
@@ -109,7 +124,7 @@ class ApiClient {
     }
 
     this.refreshPromise = (async () => {
-      const tokens = localStorage.getItem('auth_tokens');
+      const tokens = safeLocalStorage.getItem('auth_tokens');
       if (!tokens) {
         throw new Error('No tokens available');
       }
@@ -124,7 +139,7 @@ class ApiClient {
       });
 
       const newTokens = response.data.data;
-      localStorage.setItem('auth_tokens', JSON.stringify(newTokens));
+      safeLocalStorage.setItem('auth_tokens', JSON.stringify(newTokens));
     })();
 
     try {
@@ -135,8 +150,8 @@ class ApiClient {
   }
 
   private clearAuthAndRedirect() {
-    localStorage.removeItem('auth_tokens');
-    localStorage.removeItem('auth_user');
+    safeLocalStorage.removeItem('auth_tokens');
+    safeLocalStorage.removeItem('auth_user');
     if (typeof window !== 'undefined') {
       // Public review pages must NEVER redirect customer to login
       if (

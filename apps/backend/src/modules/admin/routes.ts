@@ -14,6 +14,7 @@ import {
   AdminAnalyticsQuerySchema,
   AdminSubscriptionListQuerySchema,
   AdminSubscriptionUpdateSchema,
+  AdminSubscriptionStatsQuerySchema,
   AdminSettingsUpdateSchema,
   AdminUpgradeRequestListQuerySchema,
   AdminUpgradeRequestStatusUpdateSchema,
@@ -54,7 +55,7 @@ router.get('/analytics', validate(z.object({ query: AdminAnalyticsQuerySchema })
 
 // Subscriptions
 router.get('/subscriptions', validate(z.object({ query: AdminSubscriptionListQuerySchema })), adminController.getSubscriptions.bind(adminController));
-router.get('/subscriptions/stats', validate(z.object({})), adminController.getSubscriptionStats.bind(adminController));
+router.get('/subscriptions/stats', validate(z.object({ query: AdminSubscriptionStatsQuerySchema.optional() })), adminController.getSubscriptionStats.bind(adminController));
 router.patch('/subscriptions/:id', validate(z.object({ params: z.object({ id: z.string().uuid() }), body: AdminSubscriptionUpdateSchema })), adminController.updateSubscription.bind(adminController));
 router.post('/subscriptions/:id/cancel', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.cancelSubscription.bind(adminController));
 router.post('/subscriptions/:id/reactivate', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.reactivateSubscription.bind(adminController));
@@ -72,6 +73,22 @@ router.get('/system/jobs', validate(z.object({})), adminController.getBackground
 // Settings
 router.get('/settings', validate(z.object({})), adminController.getSettings.bind(adminController));
 router.patch('/settings', validate(z.object({ body: AdminSettingsUpdateSchema })), adminController.updateSettings.bind(adminController));
+
+// Plan & Version Management (Step 3 & Step 4)
+router.get('/plans', adminController.getPlans.bind(adminController));
+router.post('/plans', adminController.createPlan.bind(adminController));
+router.get('/plans/:planId/references', adminController.checkPlanReferences.bind(adminController));
+router.patch('/plans/:planId', adminController.updatePlanMetadata.bind(adminController));
+router.delete('/plans/:planId', adminController.deletePlan.bind(adminController));
+router.post('/plans/:planId/versions', adminController.createPlanVersion.bind(adminController));
+router.post('/plans/:planId/versions/:versionNumber/publish', adminController.publishPlanVersion.bind(adminController));
+router.post('/plans/:planId/versions/:versionNumber/archive', adminController.archivePlanVersion.bind(adminController));
+router.delete('/plans/:planId/versions/:versionNumber', adminController.deletePlanVersion.bind(adminController));
+
+// Free Trial Configuration (Step 3)
+router.get('/trial-config', adminController.getTrialConfig.bind(adminController));
+router.patch('/trial-config', adminController.updateTrialConfig.bind(adminController));
+router.get('/trial-config/history', adminController.getTrialConfigHistory.bind(adminController));
 
 // Dashboard stats
 router.get('/stats', validate(z.object({})), adminController.getStats.bind(adminController));
@@ -99,6 +116,8 @@ router.get('/clients', adminController.getClients.bind(adminController));
 router.get('/clients/:id', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.getClientDetail.bind(adminController));
 router.post('/users/:id/deactivate', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.deactivateUser.bind(adminController));
 router.post('/users/:id/activate', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.activateUser.bind(adminController));
+router.delete('/users/:id', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.deleteUser.bind(adminController));
+router.delete('/clients/:id', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.deleteUser.bind(adminController));
 router.get('/usage', adminController.getPlatformUsage.bind(adminController));
 router.get('/ai-usage', adminController.getAIUsage.bind(adminController));
 router.get('/funnel', adminController.getFunnelMetrics.bind(adminController));

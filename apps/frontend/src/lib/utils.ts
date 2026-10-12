@@ -15,13 +15,14 @@ export function formatNumber(num: number): string {
   return num.toString();
 }
 
-export function formatCurrency(amount: number, currency = 'USD'): string {
-  return new Intl.NumberFormat('en-US', {
+export function formatCurrency(amount: number, currency = 'INR'): string {
+  const numericAmount = typeof amount === 'number' && !isNaN(amount) ? amount : Number(amount) || 0;
+  return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency,
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
-  }).format(amount);
+  }).format(numericAmount);
 }
 
 export function formatPercentage(value: number): string {

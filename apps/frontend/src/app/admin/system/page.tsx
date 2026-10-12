@@ -1,14 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Loader2, Database, Server, HardDrive, Cpu, MemoryStick, Network, Activity, AlertTriangle, CheckCircle, XCircle, RefreshCw, TrendingUp, Download, Upload, Users, Building2, QrCode, Star, DollarSign, Settings, Shield, Zap } from 'lucide-react';
+import { Loader2, Database, Server, HardDrive, Cpu, MemoryStick, Network, Activity, AlertTriangle, CheckCircle, XCircle, RefreshCw, TrendingUp, Download, Upload, Users, Building2, QrCode, Star, IndianRupee, Settings, Shield, Zap } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { api } from '@/lib/api-client';
-import { formatNumber, formatBytes, formatDuration } from '@/lib/utils';
+import { formatNumber, formatBytes, formatDuration, formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
 
@@ -456,10 +456,10 @@ export default function AdminSystemPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">Revenue</p>
-                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">${formatNumber(stats.total_revenue)}</span>
+                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">{formatCurrency(stats.total_revenue)}</span>
                     </div>
                     <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20">
-                      <DollarSign className="h-6 w-6 text-emerald-500" />
+                      <IndianRupee className="h-6 w-6 text-emerald-500" />
                     </div>
                   </div>
                 </CardContent>

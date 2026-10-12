@@ -6,6 +6,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 import { QRService } from './service';
 import { AuthenticatedRequest } from '../auth/middleware';
 import {
@@ -20,6 +21,7 @@ import {
 import { ApiResponse } from '../../shared/utils/apiResponse';
 import { AppError } from '../../shared/exceptions';
 import { getCategoryById, getDefaultTagsForCategory } from '../business/categories';
+import { entitlementService, normalizeBlockReason } from '../subscription/entitlement';
 
 export class QRController {
   constructor(private qrService: QRService) {}
@@ -196,14 +198,53 @@ export class QRController {
       let business: any = qrResult?.businesses || null;
       let qrCode: any = qrResult || null;
 
-      // Handle inactive QR code
-      if (qrCode && qrCode.is_active === false) {
-        throw new AppError('This QR code is currently inactive.', 403, 'QR_CODE_INACTIVE');
+      // Handle deleted business
+      if (business && business.deleted_at) {
+        throw new AppError('This business is no longer available.', 404, 'BUSINESS_DELETED');
       }
 
       // Handle inactive business
       if (business && business.status !== 'active') {
         throw new AppError('This business is currently inactive.', 403, 'BUSINESS_INACTIVE');
+      }
+
+      // Server-side Entitlement Check: Verify subscription or trial is currently entitled to QR service
+      if (business && business.id && business.id !== 'test-business') {
+        const entitlementCheck = await entitlementService.canUseService(business.id, 'qr_scan');
+        if (!entitlementCheck.allowed) {
+          const reason = normalizeBlockReason(entitlementCheck.reason);
+          // Automatic deactivation of QR codes for expired business
+          if (reason === 'TRIAL_EXPIRED' || reason === 'SUBSCRIPTION_EXPIRED') {
+            try {
+              await this.qrService['supabase']
+                .from('qr_codes')
+                .update({ is_active: false, updated_at: new Date().toISOString() })
+                .eq('business_id', business.id)
+                .eq('is_active', true);
+            } catch {}
+          }
+
+          throw new AppError(
+            entitlementCheck.message || entitlementService.getReasonMessage(reason),
+            403,
+            reason
+          );
+        }
+      }
+
+      // Handle inactive QR code: if subscription entitlement is active & valid, auto-heal; otherwise reject
+      if (qrCode && qrCode.is_active === false) {
+        if (business && business.id && business.id !== 'test-business') {
+          try {
+            await this.qrService['supabase']
+              .from('qr_codes')
+              .update({ is_active: true, updated_at: new Date().toISOString() })
+              .eq('id', qrCode.id);
+            qrCode.is_active = true;
+          } catch {}
+        } else {
+          throw new AppError('This QR code is currently inactive.', 403, 'QR_CODE_INACTIVE');
+        }
       }
 
       // Fallback: Handle onboarding QR test preview (e.g. test-qr-code or test-*)
@@ -298,35 +339,30 @@ export class QRController {
       else if (/iphone|ipad|ipod/i.test(userAgent)) os = 'iOS';
       else if (/linux/i.test(userAgent)) os = 'Linux';
 
-      let scanLogId: string | null = null;
       const isRealQrCodeId = qrCode?.id && !qrCode.id.startsWith('virtual-');
+      const scanLogId: string | null = (existingScanId && existingScanId.length >= 10)
+        ? existingScanId
+        : (isRealQrCodeId ? uuidv4() : null);
 
-      if (isRealQrCodeId && business) {
-        try {
-          const supabase = this.qrService['supabase'];
+      // Return public review payload immediately to client (unblocks review form rendering instantly)
+      ApiResponse.ok(res, {
+        business: publicBusiness,
+        qr_code_id: isRealQrCodeId ? qrCode.id : null,
+        scan_log_id: scanLogId,
+      }, 'Business found');
 
-          // 1. If client provided existing scan log ID for this session, reuse it idempotently
-          if (existingScanId && existingScanId.length >= 10) {
-            const { data: existing } = await supabase
-              .from('scan_logs')
-              .select('id')
-              .eq('id', existingScanId)
-              .eq('qr_code_id', qrCode.id)
-              .maybeSingle();
-
-            if (existing) {
-              scanLogId = existing.id;
-            }
-          }
-
-          // 2. Debounce window: check if same IP scanned this exact QR code in the last 60 seconds
-          if (!scanLogId) {
+      // Asynchronous non-blocking background scan logging and quota deduction
+      if (isRealQrCodeId && business && !existingScanId && scanLogId) {
+        setImmediate(async () => {
+          try {
+            const supabase = this.qrService['supabase'];
             const sixtySecondsAgo = new Date(Date.now() - 60 * 1000).toISOString();
             const rawIp = req.ip || req.socket.remoteAddress || '';
             const isIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(rawIp);
             const isIpv6 = /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/.test(rawIp);
             const validIp = (isIpv4 || isIpv6) ? rawIp : null;
 
+            let isDuplicate = false;
             if (validIp) {
               const { data: recentScan } = await supabase
                 .from('scan_logs')
@@ -334,54 +370,34 @@ export class QRController {
                 .eq('qr_code_id', qrCode.id)
                 .eq('ip_address', validIp)
                 .gte('scanned_at', sixtySecondsAgo)
-                .order('scanned_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
 
-              if (recentScan) {
-                scanLogId = recentScan.id;
-              }
+              if (recentScan) isDuplicate = true;
             }
-          }
 
-          // 3. If no existing or recent scan, record new scan log
-          if (!scanLogId) {
-            const rawIp = req.ip || req.socket.remoteAddress || '';
-            const isIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(rawIp);
-            const isIpv6 = /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/.test(rawIp);
-            const validIp = (isIpv4 || isIpv6) ? rawIp : null;
+            if (!isDuplicate) {
+              await entitlementService.consumeServiceQuota(business.id, 'qr_scan', 1);
 
-            const insertPayload: any = {
-              qr_code_id: qrCode.id,
-              business_id: business.id,
-              user_agent: userAgent.slice(0, 500),
-              device_type: deviceType,
-              browser,
-              os,
-              scanned_at: new Date().toISOString(),
-            };
-            if (validIp) insertPayload.ip_address = validIp;
+              const insertPayload: any = {
+                id: scanLogId,
+                qr_code_id: qrCode.id,
+                business_id: business.id,
+                user_agent: userAgent.slice(0, 500),
+                device_type: deviceType,
+                browser,
+                os,
+                scanned_at: new Date().toISOString(),
+              };
+              if (validIp) insertPayload.ip_address = validIp;
 
-            const { data: scanLog } = await supabase
-              .from('scan_logs')
-              .insert(insertPayload)
-              .select('id')
-              .single();
-
-            if (scanLog) {
-              scanLogId = scanLog.id;
+              await supabase.from('scan_logs').insert(insertPayload);
             }
+          } catch (bgErr) {
+            console.warn('Background scan logging non-fatal:', (bgErr as any)?.message || bgErr);
           }
-        } catch (scanErr) {
-          console.error('Failed to log QR scan:', scanErr);
-        }
+        });
       }
-
-      ApiResponse.ok(res, {
-        business: publicBusiness,
-        qr_code_id: isRealQrCodeId ? qrCode.id : null,
-        scan_log_id: scanLogId,
-      }, 'Business found');
     } catch (error) {
       next(error);
     }
@@ -614,7 +630,27 @@ export class QRController {
         }
       }
 
-      if (typeof is_active === 'boolean') updateData.is_active = is_active;
+      if (typeof is_active === 'boolean') {
+        if (is_active === true) {
+          const { data: existingQR } = await supabase
+            .from('qr_codes')
+            .select('business_id')
+            .eq('id', id)
+            .maybeSingle();
+          if (existingQR?.business_id) {
+            const entitlementCheck = await entitlementService.canUseService(existingQR.business_id, 'create_qr');
+            if (!entitlementCheck.allowed) {
+              const reason = normalizeBlockReason(entitlementCheck.reason);
+              throw new AppError(
+                entitlementCheck.message || entitlementService.getReasonMessage(reason),
+                403,
+                reason
+              );
+            }
+          }
+        }
+        updateData.is_active = is_active;
+      }
       updateData.updated_at = new Date().toISOString();
 
       const { data: q, error } = await supabase

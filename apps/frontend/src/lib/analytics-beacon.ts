@@ -10,13 +10,16 @@
  */
 
 const getApiBaseUrl = (): string => {
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    const envUrl = process.env.NEXT_PUBLIC_API_URL.trim();
+    return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl}/api/v1`;
+  }
   if (typeof window !== 'undefined') {
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
       return '/api/v1';
     }
   }
-  const envUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
-  return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl}/api/v1`;
+  return 'http://localhost:4000/api/v1';
 };
 
 /**

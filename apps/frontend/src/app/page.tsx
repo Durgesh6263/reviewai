@@ -63,7 +63,7 @@ export default function LandingPage() {
     offers: {
       '@type': 'Offer',
       price: '0.00',
-      priceCurrency: 'USD',
+      priceCurrency: 'INR',
     },
     featureList: [
       'QR-based customer review collection',

@@ -32,6 +32,7 @@ import {
   ChevronRight,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -50,8 +51,9 @@ export default function AdminClientDetailPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'profile' | 'usage' | 'activity'>('profile');
 
-  // Deactivation confirmation modal state
+  // Deactivation and deletion confirmation modal states
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
   const fetchClientData = async (isRef = false) => {
@@ -92,6 +94,23 @@ export default function AdminClientDetailPage() {
     } catch (err: any) {
       console.error('Failed to deactivate user:', err);
       toast.error(err.response?.data?.message || err.message || 'Failed to deactivate user.');
+    } finally {
+      setIsProcessingAction(false);
+    }
+  };
+
+  // Handle Permanent Delete User
+  const handleConfirmDelete = async () => {
+    const targetUserId = data?.user?.id || clientId;
+    try {
+      setIsProcessingAction(true);
+      await api.delete(`/admin/users/${targetUserId}`);
+      toast.success('User and all associated data have been permanently deleted.');
+      setShowDeleteModal(false);
+      router.push('/admin/clients');
+    } catch (err: any) {
+      console.error('Failed to delete user:', err);
+      toast.error(err.response?.data?.message || err.message || 'Failed to delete user.');
     } finally {
       setIsProcessingAction(false);
     }
@@ -198,26 +217,50 @@ export default function AdminClientDetailPage() {
               Protected Admin
             </span>
           ) : isDeactivated ? (
-            <Button
-              size="sm"
-              onClick={handleActivateUser}
-              disabled={isProcessingAction}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs gap-1.5 rounded-xl"
-            >
-              <UserCheck className="w-3.5 h-3.5" />
-              <span>Activate User</span>
-            </Button>
+            <>
+              <Button
+                size="sm"
+                onClick={handleActivateUser}
+                disabled={isProcessingAction}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs gap-1.5 rounded-xl"
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>Activate User</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDeleteModal(true)}
+                disabled={isProcessingAction}
+                className="border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs gap-1.5 rounded-xl"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete User</span>
+              </Button>
+            </>
           ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowDeactivateModal(true)}
-              disabled={isProcessingAction}
-              className="border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs gap-1.5 rounded-xl"
-            >
-              <UserX className="w-3.5 h-3.5" />
-              <span>Deactivate User</span>
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDeactivateModal(true)}
+                disabled={isProcessingAction}
+                className="border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs gap-1.5 rounded-xl"
+              >
+                <UserX className="w-3.5 h-3.5" />
+                <span>Deactivate User</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDeleteModal(true)}
+                disabled={isProcessingAction}
+                className="border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs gap-1.5 rounded-xl"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete User</span>
+              </Button>
+            </>
           )}
 
           <Button
@@ -598,10 +641,67 @@ export default function AdminClientDetailPage() {
                 size="sm"
                 onClick={handleConfirmDeactivate}
                 disabled={isProcessingAction}
-                className="bg-red-600 hover:bg-red-500 text-white text-xs gap-1.5"
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs gap-1.5"
               >
                 {isProcessingAction && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                 <span>Deactivate User</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Permanent Deletion Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-red-500/30 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center flex-shrink-0 text-red-400">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold text-white">Delete this user and all associated data?</h3>
+                <p className="text-xs text-red-400/90 mt-1 font-medium">
+                  This action is permanent and cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-950/80 border border-red-500/20 rounded-xl text-xs space-y-2">
+              <div className="flex items-center gap-2 text-slate-200 font-semibold">
+                <ShieldAlert className="w-4 h-4 text-red-400" />
+                <span>Permanent Data Cascade</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Deleting user <span className="font-semibold text-slate-200">{user.email}</span> will permanently remove:
+              </p>
+              <ul className="text-[11px] text-slate-400 list-disc list-inside space-y-0.5 pl-1">
+                <li>All businesses ({businesses.length}) &amp; settings</li>
+                <li>All QR codes &amp; public review routing links</li>
+                <li>All subscriptions &amp; entitlements</li>
+                <li>All review sessions, scans, &amp; AI usage history</li>
+                <li>User profile and authentication credentials</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDeleteModal(false)}
+                disabled={isProcessingAction}
+                className="border-slate-800 bg-slate-950 hover:bg-slate-800 text-slate-300 text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleConfirmDelete}
+                disabled={isProcessingAction}
+                className="bg-red-600 hover:bg-red-500 text-white text-xs gap-1.5"
+              >
+                {isProcessingAction && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Permanently Delete User</span>
               </Button>
             </div>
           </div>

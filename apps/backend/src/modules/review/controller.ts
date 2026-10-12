@@ -122,6 +122,7 @@ export class ReviewController {
   generateReview = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const sessionId = (req.body?.session_id || req.params?.sessionId || 'guest-session') as string;
+      const businessId = (req.body?.business_id || req.query?.business_id) as string | undefined;
       const rating = Number(req.body?.rating || 5);
       const language = (req.body?.language || 'en') as string;
       const tags = Array.isArray(req.body?.tags) ? req.body.tags : undefined;
@@ -129,6 +130,7 @@ export class ReviewController {
       const variation = typeof req.body?.variation === 'number' ? req.body.variation : undefined;
       const review = await this.reviewService.generateReview({
         session_id: sessionId,
+        business_id: businessId,
         rating,
         language,
         tags,

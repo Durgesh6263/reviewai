@@ -7,7 +7,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthService } from './service';
 import { TokenPayload, UserRole, hasPermission, Permission } from './types';
-import { AppError, AuthenticationError, AuthorizationError } from '../../shared/exceptions';
+import { AppError, AuthenticationError, AuthorizationError, RateLimitError } from '../../shared/exceptions';
 
 // Extend Express Request type to include user
 declare module 'express' {
@@ -147,34 +147,46 @@ export class AuthMiddleware {
   };
 
   /**
-   * Rate limiting for auth endpoints
+   * Rate limiting for auth endpoints (login, register, forgot-password)
+   * Keyed by client IP + normalized email to prevent users sharing an IP from blocking each other.
+   * Resets failed attempt counter on successful authentication so legitimate users are not penalized.
    */
-  authRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
+  authRateLimit = (maxAttempts = 15, windowMs = 15 * 60 * 1000) => {
     const attempts = new Map<string, { count: number; resetAt: number }>();
 
     return (req: Request, res: Response, next: NextFunction): void => {
-      // In development / testing environments, do not lock out developers with aggressive rate limits
-      if (process.env.NODE_ENV !== 'production') {
-        return next();
-      }
+      // In development / testing environments, ensure generous threshold so normal work/tests aren't blocked
+      const isDev = process.env.NODE_ENV !== 'production';
+      const effectiveMax = isDev ? Math.max(maxAttempts, 50) : maxAttempts;
 
-      const key = req.ip || 'unknown';
+      // Extract client IP properly (considering reverse proxies)
+      const forwarded = req.headers['x-forwarded-for'];
+      const clientIp = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '') || req.ip || req.socket.remoteAddress || 'unknown';
+      // Isolate key by IP + normalized email so User A cannot trigger User B's rate limit
+      const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+      const key = email ? `${clientIp}:${email}` : clientIp;
+
       const now = Date.now();
-
       const record = attempts.get(key);
 
       if (!record || now > record.resetAt) {
         attempts.set(key, { count: 1, resetAt: now + windowMs });
-        return next();
+      } else {
+        if (record.count >= effectiveMax) {
+          const retryAfter = Math.ceil((record.resetAt - now) / 1000);
+          res.set('Retry-After', retryAfter.toString());
+          throw new RateLimitError('Too many attempts. Please try again later.', retryAfter);
+        }
+        record.count++;
       }
 
-      if (record.count >= maxAttempts) {
-        const retryAfter = Math.ceil((record.resetAt - now) / 1000);
-        res.set('Retry-After', retryAfter.toString());
-        throw new AppError('Too many attempts. Please try again later.', 429, 'RATE_LIMITED');
-      }
+      // If authentication succeeds (HTTP 2xx), clear failed attempt counter immediately
+      res.on('finish', () => {
+        if (res.statusCode < 400) {
+          attempts.delete(key);
+        }
+      });
 
-      record.count++;
       next();
     };
   };

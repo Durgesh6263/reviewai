@@ -20,6 +20,7 @@ import { getCategoryById, getDefaultTagsForCategory } from './categories';
 import { AppError, NotFoundError, ConflictError, AuthorizationError } from '../../shared/exceptions';
 import { parsePaginationParams, buildPaginationMeta } from '../../shared/utils/pagination';
 import { resolveGoogleBusinessIdentity, normalizeGoogleReviewUrl, maskEmail } from './google-business';
+import { entitlementService } from '../subscription/entitlement';
 
 export class BusinessService {
   private static registrationLocks = new Map<string, Promise<any>>();
@@ -392,6 +393,13 @@ export class BusinessService {
         await this.createDefaultQRCode(business.id, slug);
       } catch (qrErr) {
         console.error('Failed to create default QR code:', qrErr);
+      }
+
+      // Provision initial trial subscription snapshot based on active trial configuration
+      try {
+        await entitlementService.provisionTrialSubscription(business.id, userId);
+      } catch (trialErr) {
+        console.error('Failed to provision initial trial subscription:', trialErr);
       }
 
       // Link business to onboarding_progress for the user and advance step

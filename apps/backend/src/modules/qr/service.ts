@@ -18,7 +18,9 @@ import {
   QR_CONSTANTS,
 } from './types';
 import { AppError, NotFoundError, ConflictError, AuthorizationError } from '../../shared/exceptions';
+import { logger } from '../../shared/logger';
 import { parsePaginationParams, buildPaginationMeta } from '../../shared/utils/pagination';
+import { entitlementService, normalizeBlockReason } from '../subscription/entitlement';
 
 export class QRService {
   constructor(private supabase: SupabaseClient) {}
@@ -34,6 +36,16 @@ export class QRService {
   ): Promise<QRCode> {
     // Verify business access
     await this.verifyBusinessAccess(businessId, userId, userRole, ['owner', 'admin', 'manager']);
+
+    // Check QR code creation quota entitlement
+    const entitlementCheck = await entitlementService.canUseService(businessId, 'create_qr');
+    if (!entitlementCheck.allowed) {
+      throw new AppError(
+        entitlementCheck.message || entitlementService.getReasonMessage(entitlementCheck.reason || 'QR_CODE_LIMIT_REACHED'),
+        403,
+        entitlementCheck.reason || 'QR_CODE_LIMIT_REACHED'
+      );
+    }
 
     // Verify onboarding duplicate protection
     const { data: progress } = await this.supabase
@@ -176,104 +188,75 @@ export class QRService {
       raw.toLowerCase(),
     ])).filter(Boolean);
 
-    let qrCode: any = null;
+    const QR_FIELDS = 'id, business_id, slug, is_active, design, download_count, last_downloaded_at, label, created_at, updated_at';
+    const BIZ_FIELDS = 'id, name, slug, category, custom_tags, logo_url, description, google_review_url, website_url, phone, address, status, settings, created_at, updated_at, deleted_at';
 
-    // 1. Try finding qr_code by slug in candidates
-    const { data: qrBySlug } = await this.supabase
+    // 1. Primary path: Single JOIN query for qr_code + business (eliminates sequential round-trips)
+    const { data: qrWithBiz } = await this.supabase
       .from('qr_codes')
-      .select('*')
+      .select(`
+        ${QR_FIELDS},
+        businesses!inner ( ${BIZ_FIELDS} )
+      `)
       .in('slug', candidates)
       .limit(1)
       .maybeSingle();
 
-    if (qrBySlug) {
-      qrCode = qrBySlug;
+    if (qrWithBiz && qrWithBiz.businesses) {
+      return qrWithBiz as any;
     }
 
-    // 2. Try finding qr_code by id if UUID
-    if (!qrCode && isUuid) {
+    // 2. Try finding qr_code by id if UUID with joined business
+    if (isUuid) {
       const { data: qrById } = await this.supabase
         .from('qr_codes')
-        .select('*')
+        .select(`
+          ${QR_FIELDS},
+          businesses!inner ( ${BIZ_FIELDS} )
+        `)
         .eq('id', decoded)
         .maybeSingle();
-      if (qrById) qrCode = qrById;
+      if (qrById && qrById.businesses) return qrById as any;
     }
 
-    // 3. Try finding qr_code with ILIKE match
-    if (!qrCode && hyphenated.length > 2) {
-      const { data: qrByIlike } = await this.supabase
-        .from('qr_codes')
-        .select('*')
-        .ilike('slug', hyphenated)
-        .limit(1)
-        .maybeSingle();
-      if (qrByIlike) qrCode = qrByIlike;
-    }
-
-    // If a qrCode was found, fetch its associated business
-    if (qrCode) {
-      const { data: business } = await this.supabase
-        .from('businesses')
-        .select('*')
-        .eq('id', qrCode.business_id)
-        .is('deleted_at', null)
-        .maybeSingle();
-
-      if (business) {
-        return {
-          ...qrCode,
-          businesses: business,
-        };
-      }
-    }
-
-    // 4. Fallback: Lookup by business directly (e.g. /r/the-fitness-world or /r/the fitness world)
-    let business: any = null;
-
-    const { data: bizBySlug } = await this.supabase
+    // 3. Fallback: Lookup by business directly with associated qr_codes in single query
+    const { data: bizWithQR } = await this.supabase
       .from('businesses')
-      .select('*')
+      .select(`
+        ${BIZ_FIELDS},
+        qr_codes ( ${QR_FIELDS} )
+      `)
       .in('slug', candidates)
       .is('deleted_at', null)
       .limit(1)
       .maybeSingle();
 
-    if (bizBySlug) {
-      business = bizBySlug;
-    }
+    let business: any = bizWithQR;
 
     // Check business by UUID if applicable
     if (!business && isUuid) {
       const { data: bizById } = await this.supabase
         .from('businesses')
-        .select('*')
+        .select(`
+          ${BIZ_FIELDS},
+          qr_codes ( ${QR_FIELDS} )
+        `)
         .eq('id', decoded)
         .is('deleted_at', null)
         .maybeSingle();
       if (bizById) business = bizById;
     }
 
-    // Check business by ILIKE slug
-    if (!business && hyphenated.length > 2) {
-      const { data: bizByIlike } = await this.supabase
-        .from('businesses')
-        .select('*')
-        .ilike('slug', hyphenated)
-        .is('deleted_at', null)
-        .limit(1)
-        .maybeSingle();
-      if (bizByIlike) business = bizByIlike;
-    }
-
-    // 5. Prefix match: if slug has random suffix, e.g. "the-fitness-world-mubno2p8"
-    // and qr_code was missing, match business "the-fitness-world"
+    // Prefix match: if slug has random suffix, e.g. "the-fitness-world-mubno2p8"
     if (!business && hyphenated.includes('-')) {
       const prefixSlug = hyphenated.replace(/-[a-z0-9]{4,10}$/i, '');
       if (prefixSlug && prefixSlug !== hyphenated) {
         const { data: bizByPrefix } = await this.supabase
           .from('businesses')
-          .select('*')
+          .select(`
+            ${BIZ_FIELDS},
+            qr_codes ( ${QR_FIELDS} )
+          `)
           .eq('slug', prefixSlug)
           .is('deleted_at', null)
           .maybeSingle();
@@ -281,40 +264,35 @@ export class QRService {
       }
     }
 
-    // If business was found directly, find its active QR code
+    // If business was found, return its active QR code or synthetic QR
     if (business) {
-      const { data: activeQR } = await this.supabase
-        .from('qr_codes')
-        .select('*')
-        .eq('business_id', business.id)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const qrList = Array.isArray(business.qr_codes) ? business.qr_codes : [];
+      const activeQR = qrList.find((q: any) => q.is_active !== false) || qrList[0];
+      const { qr_codes, ...bizData } = business;
 
       if (activeQR) {
         return {
           ...activeQR,
-          businesses: business,
-        };
+          businesses: bizData,
+        } as any;
       }
 
-      // If no QR code exists yet, return synthetic QR code linking to this business
+      // If no QR code exists, return synthetic QR code linking to this business
       return {
-        id: `virtual-${business.id}`,
-        business_id: business.id,
-        slug: business.slug,
-        label: `${business.name} Review QR`,
+        id: `virtual-${bizData.id}`,
+        business_id: bizData.id,
+        slug: bizData.slug,
+        label: `${bizData.name} Review QR`,
         design: {
-          primary_color: business.settings?.primary_color || '#2563EB',
-          google_review_url: business.google_review_url,
+          primary_color: bizData.settings?.primary_color || '#2563EB',
+          google_review_url: bizData.google_review_url,
         },
         download_count: 0,
         last_downloaded_at: null,
         is_active: true,
-        created_at: business.created_at,
-        updated_at: business.updated_at,
-        businesses: business,
+        created_at: bizData.created_at,
+        updated_at: bizData.updated_at,
+        businesses: bizData,
       } as any;
     }
 
@@ -336,6 +314,18 @@ export class QRService {
     // Don't allow slug changes (permanent QR requirement)
     const updateData: any = { ...data };
     delete updateData.slug;
+
+    if (data.is_active === true) {
+      const entitlementCheck = await entitlementService.canUseService(businessId, 'create_qr');
+      if (!entitlementCheck.allowed) {
+        const reason = normalizeBlockReason(entitlementCheck.reason);
+        throw new AppError(
+          entitlementCheck.message || entitlementService.getReasonMessage(reason),
+          403,
+          reason
+        );
+      }
+    }
 
     if (data.google_review_url !== undefined || data.design) {
       const { data: existingQR } = await this.supabase
@@ -479,67 +469,133 @@ export class QRService {
       throw new NotFoundError('QR Code');
     }
 
-    // Check subscription limits for QR scans
+    if (qrCode.businesses?.deleted_at) {
+      throw new AppError('This business is no longer available.', 404, 'BUSINESS_DELETED');
+    }
+
+    if (qrCode.businesses?.status && qrCode.businesses.status !== 'active') {
+      throw new AppError('This business is currently inactive.', 403, 'BUSINESS_INACTIVE');
+    }
+
+    // 1. Check current business entitlement & remaining quota
     await this.checkQrScanLimit(qrCode.business_id);
 
-    // Ingest scan log using database function
-    const { data: scanId, error: scanError } = await this.supabase.rpc('ingest_scan_log', {
-      p_qr_code_id: qrCode.id,
-      p_ip_address: scanData.ip_address,
-      p_user_agent: scanData.user_agent,
-      p_referrer: scanData.referrer,
-      p_country: scanData.country,
-      p_city: scanData.city,
-      p_device_type: scanData.device_type,
-      p_browser: scanData.browser,
-      p_os: scanData.os,
-    });
-
-    if (scanError || !scanId) {
-      throw new AppError('Failed to record scan', 500, 'SCAN_LOG_FAILED');
+    // If entitlement is active and valid, dynamically ensure qr_code is marked active
+    if (qrCode.is_active === false) {
+      try {
+        await this.supabase
+          .from('qr_codes')
+          .update({ is_active: true, updated_at: new Date().toISOString() })
+          .eq('id', qrCode.id);
+        qrCode.is_active = true;
+      } catch {}
     }
 
-    // Get business info for session creation
-    const { data: business } = await this.supabase
-      .from('businesses')
-      .select('id, name, slug, logo_url, settings')
-      .eq('id', qrCode.business_id)
-      .single();
-
-    if (!business) {
-      throw new NotFoundError('Business');
+    // 2. Atomically consume 1 QR scan quota unit BEFORE recording scan to protect against race conditions
+    const consumeRes = await entitlementService.consumeServiceQuota(qrCode.business_id, 'qr_scan', 1);
+    if (!consumeRes.allowed || !consumeRes.success) {
+      const reason = normalizeBlockReason(consumeRes.reason || 'QR_QUOTA_EXHAUSTED');
+      throw new AppError(
+        entitlementService.getReasonMessage(reason),
+        403,
+        reason
+      );
     }
 
-    // Start review session
-    const { data: sessionId, error: sessionError } = await this.supabase.rpc('start_review_session', {
-      p_scan_log_id: scanId,
-      p_language: business.settings?.language_default || 'en',
-    });
+    try {
+      // 3. Ingest scan log using database function
+      const { data: scanId, error: scanError } = await this.supabase.rpc('ingest_scan_log', {
+        p_qr_code_id: qrCode.id,
+        p_ip_address: scanData.ip_address,
+        p_user_agent: scanData.user_agent,
+        p_referrer: scanData.referrer,
+        p_country: scanData.country,
+        p_city: scanData.city,
+        p_device_type: scanData.device_type,
+        p_browser: scanData.browser,
+        p_os: scanData.os,
+      });
 
-    if (sessionError || !sessionId) {
-      throw new AppError('Failed to start review session', 500, 'SESSION_START_FAILED');
+      if (scanError || !scanId) {
+        throw new AppError('Failed to record scan', 500, 'SCAN_LOG_FAILED');
+      }
+
+      // 4. Get business info for session creation
+      const { data: business } = await this.supabase
+        .from('businesses')
+        .select('id, name, slug, logo_url, settings')
+        .eq('id', qrCode.business_id)
+        .single();
+
+      if (!business) {
+        throw new NotFoundError('Business');
+      }
+
+      // 5. Start review session
+      let sessionId: string | null = null;
+      try {
+        const { data: rpcSessionId, error: sessionError } = await this.supabase.rpc('start_review_session', {
+          p_scan_log_id: scanId,
+          p_language: business.settings?.language_default || 'en',
+        });
+        if (!sessionError && rpcSessionId) {
+          sessionId = rpcSessionId;
+        }
+      } catch {}
+
+      if (!sessionId) {
+        const { data: sessionRow, error: sessionInsertErr } = await this.supabase
+          .from('review_sessions')
+          .insert({
+            business_id: qrCode.business_id,
+            qr_code_id: qrCode.id,
+            scan_log_id: scanId,
+            language: business.settings?.language_default || 'en',
+            rating: 5,
+            status: 'started',
+            started_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single();
+
+        if (sessionInsertErr || !sessionRow) {
+          throw new AppError('Failed to start review session', 500, 'SESSION_START_FAILED');
+        }
+        sessionId = sessionRow.id;
+      }
+
+      // 6. Update download count
+      await this.supabase
+        .from('qr_codes')
+        .update({
+          download_count: qrCode.download_count + 1,
+          last_downloaded_at: new Date().toISOString(),
+        })
+        .eq('id', qrCode.id);
+
+      return {
+        scan_id: scanId,
+        business: {
+          id: business.id,
+          name: business.name,
+          slug: business.slug,
+          logo_url: business.logo_url,
+          settings: business.settings,
+        },
+        session_id: sessionId as string,
+      };
+    } catch (err) {
+      // If scan logging or session start failed, refund the consumed quota unit
+      // unless it was already a 403 entitlement error
+      if (!(err instanceof AppError && err.statusCode === 403)) {
+        try {
+          await entitlementService.refundServiceQuota(qrCode.business_id, 'qr_scan', 1);
+        } catch (refundErr) {
+          console.error('Failed to refund QR scan quota after failed scan operation:', refundErr);
+        }
+      }
+      throw err;
     }
-
-    // Update download count
-    await this.supabase
-      .from('qr_codes')
-      .update({
-        download_count: qrCode.download_count + 1,
-        last_downloaded_at: new Date().toISOString(),
-      })
-      .eq('id', qrCode.id);
-
-    return {
-      scan_id: scanId,
-      business: {
-        id: business.id,
-        name: business.name,
-        slug: business.slug,
-        logo_url: business.logo_url,
-        settings: business.settings,
-      },
-      session_id: sessionId,
-    };
   }
 
   /**
@@ -728,103 +784,30 @@ export class QRService {
   }
 
   /**
-   * Check QR scan limit for business
+   * Check QR scan limit for business using Central Entitlement Service
+   * Enforces multi-condition expiry (time, QR quota, AI quota) with NO monthly reset
    */
   private async checkQrScanLimit(businessId: string): Promise<void> {
-    // Get subscription for this business
-    const { data: subscription } = await this.supabase
-      .from('subscriptions')
-      .select('id, plan, status, current_period_start, current_period_end')
-      .eq('business_id', businessId)
-      .single();
-
-    // If no subscription, use free plan limits
-    if (!subscription) {
-      // Check scan_logs count for current period (last 30 days)
-      const periodStart = new Date();
-      periodStart.setDate(periodStart.getDate() - 30);
-      periodStart.setHours(0, 0, 0, 0);
-
-      const { count: scanCount } = await this.supabase
-        .from('scan_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId)
-        .gte('scanned_at', periodStart.toISOString());
-
-      const freeLimit = 50; // From SUBSCRIPTION_CONSTANTS.PLANS.free.limits.review_generations (also used for scans)
-      if ((scanCount || 0) >= freeLimit) {
-        throw new AppError(
-          'QR scan limit exceeded for Free plan. Please upgrade to continue.',
-          403,
-          'QR_SCAN_LIMIT_EXCEEDED'
-        );
+    const check = await entitlementService.canUseService(businessId, 'qr_scan');
+    if (!check.allowed) {
+      const reason = normalizeBlockReason(check.reason);
+      if (reason === 'TRIAL_EXPIRED' || reason === 'SUBSCRIPTION_EXPIRED') {
+        try {
+          await this.supabase
+            .from('qr_codes')
+            .update({ is_active: false, updated_at: new Date().toISOString() })
+            .eq('business_id', businessId)
+            .eq('is_active', true);
+        } catch (err) {
+          logger.warn({ businessId, err }, 'Failed to set qr_codes inactive upon scan limit expiry check');
+        }
       }
-      return;
-    }
-
-    // If subscription is not active, check if it's expired/canceled
-    if (!['active', 'trialing'].includes(subscription.status)) {
-      // For expired/canceled, fallback to free plan limits
-      const periodStart = new Date(subscription.current_period_end);
-      periodStart.setDate(periodStart.getDate() - 30);
-
-      const { count: scanCount } = await this.supabase
-        .from('scan_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId)
-        .gte('scanned_at', periodStart.toISOString());
-
-      const freeLimit = 50;
-      if ((scanCount || 0) >= freeLimit) {
-        throw new AppError(
-          'QR scan limit exceeded. Your subscription has expired. Please renew or upgrade.',
-          403,
-          'QR_SCAN_LIMIT_EXCEEDED'
-        );
-      }
-      return;
-    }
-
-    // Check current period usage from usage_logs
-    const { data: usageRecords } = await this.supabase
-      .from('usage_logs')
-      .select('count')
-      .eq('subscription_id', subscription.id)
-      .eq('metric', 'qr_scans')
-      .eq('period_start', subscription.current_period_start)
-      .eq('period_end', subscription.current_period_end);
-
-    const used = usageRecords?.reduce((sum, r) => sum + r.count, 0) || 0;
-
-    // Get plan limits
-    const { data: planConfig } = await this.supabase
-      .from('plan_configs')
-      .select('max_qr_scans')
-      .eq('plan', subscription.plan)
-      .single();
-
-    const limit = planConfig?.max_qr_scans || this.getPlanScanLimit(subscription.plan);
-
-    if (limit !== null && used >= limit) {
       throw new AppError(
-        `QR scan limit (${limit}) exceeded for ${subscription.plan} plan. Please upgrade.`,
+        check.message || entitlementService.getReasonMessage(reason),
         403,
-        'QR_SCAN_LIMIT_EXCEEDED'
+        reason
       );
     }
-  }
-
-  /**
-   * Get plan scan limit from centralized config
-   */
-  private getPlanScanLimit(plan: string): number | null {
-    const limits: Record<string, number | null> = {
-      free: 50,
-      starter: 500,
-      professional: 2000,
-      enterprise: null, // unlimited
-    };
-    return limits[plan] ?? 50;
   }
 
   /**

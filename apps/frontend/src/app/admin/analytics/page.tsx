@@ -164,7 +164,7 @@ export default function AdminAnalyticsPage() {
       name: 'MRR',
       value: analytics.overview.mrr,
       isCurrency: true,
-      icon: DollarSign,
+      icon: IndianRupee,
       color: 'text-blue-500',
       bgColor: 'bg-blue-50 dark:bg-blue-900/20',
     },
@@ -593,5 +593,5 @@ export default function AdminAnalyticsPage() {
 }
 
 import Link from 'next/link';
-import { DollarSign, CreditCard } from 'lucide-react';
+import { IndianRupee, CreditCard } from 'lucide-react';
 import { formatCurrency } from '@/lib/utils';

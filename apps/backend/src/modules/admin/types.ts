@@ -270,28 +270,52 @@ export const AdminSubscriptionSchema = z.object({
   owner_id: z.string().uuid(),
   owner_name: z.string(),
   owner_email: z.string().email(),
-  plan: z.enum(['free', 'starter', 'professional', 'enterprise']),
-  status: z.enum(['active', 'past_due', 'canceled', 'incomplete', 'trialing']),
+  plan: z.string(),
+  plan_name: z.string().optional(),
+  plan_version_id: z.string().optional(),
+  duration: z.string().optional(),
+  status: z.string(),
+  is_active: z.boolean().optional(),
+  days_remaining: z.number().optional(),
+  total_qr_quota: z.number().optional(),
+  used_qr: z.number().optional(),
+  remaining_qr: z.number().optional(),
+  total_ai_quota: z.number().optional(),
+  used_ai: z.number().optional(),
+  remaining_ai: z.number().optional(),
+  monthly_qr_limit: z.number().optional(),
+  monthly_ai_limit: z.number().optional(),
+  current_month_qr_used: z.number().optional(),
+  current_month_ai_used: z.number().optional(),
+  current_month_qr_remaining: z.number().optional(),
+  current_month_ai_remaining: z.number().optional(),
+  next_monthly_reset: z.string().optional(),
+  current_period_index: z.number().optional(),
+  monthly_history: z.array(z.record(z.unknown())).optional(),
+  exhaustion_reason: z.string().nullable().optional(),
   stripe_subscription_id: z.string().nullable(),
   stripe_customer_id: z.string().nullable(),
-  current_period_start: z.string().datetime(),
-  current_period_end: z.string().datetime(),
+  current_period_start: z.string(),
+  current_period_end: z.string(),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+  duration_months: z.number().optional(),
+  price_paid: z.number().optional(),
+  raw_status: z.string().optional(),
+  display_status: z.string().optional(),
+  exhaustion_message: z.string().nullable().optional(),
   cancel_at_period_end: z.boolean(),
-  trial_end: z.string().datetime().nullable(),
+  trial_end: z.string().nullable(),
   quantity: z.number(),
   monthly_price: z.number(),
-  features: z.object({
-    max_businesses: z.number(),
-    max_qr_codes: z.number(),
-    max_scans_per_month: z.number(),
-    ai_reviews_per_month: z.number(),
-    custom_domains: z.boolean(),
-    white_label: z.boolean(),
-    api_access: z.boolean(),
-    priority_support: z.boolean(),
-  }),
-  created_at: z.string().datetime(),
-  updated_at: z.string().datetime(),
+  features: z.record(z.unknown()),
+  history: z.array(z.record(z.unknown())).optional(),
+  razorpay_order_id: z.string().nullable().optional(),
+  razorpay_payment_id: z.string().nullable().optional(),
+  payment_status: z.string().nullable().optional(),
+  payment_date: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 });
 
 export const AdminSubscriptionListQuerySchema = z.object({
@@ -303,8 +327,41 @@ export const AdminSubscriptionListQuerySchema = z.object({
 });
 
 export const AdminSubscriptionUpdateSchema = z.object({
-  plan: z.enum(['free', 'starter', 'professional', 'enterprise']).optional(),
+  plan: z.string().optional(),
+  duration_months: z.coerce.number().optional(),
+  version_number: z.coerce.number().optional(),
+  monthly_qr_limit: z.coerce.number().optional(),
+  monthly_ai_limit: z.coerce.number().optional(),
+  preserve_usage: z.boolean().optional(),
 });
+
+export const AdminUserSubscriptionUsageSchema = z.object({
+  user_id: z.string(),
+  user_name: z.string(),
+  email: z.string(),
+  business_count: z.number(),
+  plan: z.string(),
+  duration: z.string(),
+  subscription_status: z.string(),
+  monthly_qr_limit: z.number(),
+  qr_used: z.number(),
+  qr_remaining: z.number(),
+  qr_usage_percent: z.number(),
+  monthly_ai_limit: z.number(),
+  ai_used: z.number(),
+  ai_remaining: z.number(),
+  ai_usage_percent: z.number(),
+  expiry_date: z.string().nullable(),
+  businesses: z.array(z.any()).optional(),
+});
+export type AdminUserSubscriptionUsage = z.infer<typeof AdminUserSubscriptionUsageSchema>;
+
+export const AdminSubscriptionStatsQuerySchema = z.object({
+  search: z.string().optional(),
+  plan: z.string().optional(),
+  status: z.string().optional(),
+});
+export type AdminSubscriptionStatsQuery = z.infer<typeof AdminSubscriptionStatsQuerySchema>;
 
 export const AdminSubscriptionStatsSchema = z.object({
   total_subscriptions: z.number(),
@@ -322,6 +379,7 @@ export const AdminSubscriptionStatsSchema = z.object({
     status: z.string(),
     count: z.number(),
   })),
+  user_subscriptions: z.array(AdminUserSubscriptionUsageSchema).optional(),
 });
 
 export type AdminSubscription = z.infer<typeof AdminSubscriptionSchema>;
@@ -530,22 +588,39 @@ export type AdminRecentActivity = z.infer<typeof AdminRecentActivitySchema>;
 
 // Upgrade Request schemas
 export const AdminUpgradeRequestSchema = z.object({
-  id: z.string().uuid(),
-  business_id: z.string().uuid(),
+  id: z.string(),
+  business_id: z.string(),
   business_name: z.string(),
   business_slug: z.string(),
-  owner_id: z.string().uuid(),
+  owner_id: z.string(),
   owner_name: z.string(),
-  owner_email: z.string().email(),
-  requested_plan: z.enum(['starter', 'professional', 'enterprise']),
-  current_plan: z.enum(['free', 'starter', 'professional', 'enterprise']),
+  owner_email: z.string(),
+  requested_plan: z.string(),
+  requested_plan_name: z.string().optional(),
+  current_plan: z.string(),
+  current_plan_name: z.string().optional(),
+  current_plan_slug: z.string().optional(),
+  current_subscription_status: z.string().optional(),
+  current_qr_used: z.number().optional(),
+  current_qr_limit: z.number().optional(),
+  current_ai_used: z.number().optional(),
+  current_ai_limit: z.number().optional(),
+  current_period_end: z.string().optional(),
   status: z.enum(['pending', 'approved', 'rejected', 'contacted', 'cancelled']),
   reason: z.string().nullable(),
+  message: z.string().nullable().optional(),
+  plan_name: z.string().optional(),
+  plan_version_id: z.string().optional(),
+  duration_months: z.number().optional(),
+  price_inr: z.number().optional(),
+  allocated_qr_quota: z.number().optional(),
+  allocated_ai_quota: z.number().optional(),
+  max_qr_codes: z.number().optional(),
   admin_notes: z.string().nullable(),
-  reviewed_by: z.string().uuid().nullable(),
-  reviewed_at: z.string().datetime().nullable(),
-  created_at: z.string().datetime(),
-  updated_at: z.string().datetime(),
+  reviewed_by: z.string().nullable().optional(),
+  reviewed_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 });
 
 export const AdminUpgradeRequestListQuerySchema = z.object({
@@ -559,6 +634,7 @@ export const AdminUpgradeRequestListQuerySchema = z.object({
 export const AdminUpgradeRequestStatusUpdateSchema = z.object({
   status: z.enum(['approved', 'rejected', 'contacted', 'cancelled']),
   admin_notes: z.string().optional(),
+  admin_note: z.string().optional(),
 });
 
 export type AdminUpgradeRequest = z.infer<typeof AdminUpgradeRequestSchema>;
@@ -879,8 +955,48 @@ export const AdminUsageQuerySchema = z.object({
   range: z.enum(['today', '7d', '30d', '90d', 'custom']).optional().default('30d'),
   start_date: z.string().optional(),
   end_date: z.string().optional(),
+  search: z.string().optional(),
+  plan: z.string().optional(),
+  status: z.string().optional(),
 });
 export type AdminUsageQuery = z.infer<typeof AdminUsageQuerySchema>;
+
+export interface AdminBusinessUsageDetail {
+  id: string;
+  name: string;
+  slug?: string;
+  plan: string;
+  status: string;
+  monthly_qr_limit: number;
+  qr_used: number;
+  qr_remaining: number;
+  qr_usage_percent: number;
+  monthly_ai_limit: number;
+  ai_used: number;
+  ai_remaining: number;
+  ai_usage_percent: number;
+  last_activity: string;
+}
+
+export interface AdminUserUsage {
+  user_id: string;
+  user_name: string;
+  email: string;
+  business_count: number;
+  plan: string;
+  subscription_status: string;
+  monthly_qr_limit: number;
+  qr_used: number;
+  qr_remaining: number;
+  qr_usage_percent: number;
+  monthly_ai_limit: number;
+  ai_used: number;
+  ai_remaining: number;
+  ai_usage_percent: number;
+  last_activity: string;
+  businesses: AdminBusinessUsageDetail[];
+}
+
 
 export const AdminAIUsageQuerySchema = z.object({
   range: z.enum(['7d', '30d', '90d']).optional().default('30d'),

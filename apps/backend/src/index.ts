@@ -31,6 +31,7 @@ import { createSettingsRoutes } from './modules/settings/routes';
 import adminRoutes from './modules/admin/routes';
 import { createPrivacyRoutes } from './modules/privacy/routes';
 import { createOnboardingRoutes } from './modules/onboarding/routes';
+import { createCustomerRoutes } from './modules/customer/routes';
 
 // Import module controllers/services
 import { AuthController } from './modules/auth/controller';
@@ -52,10 +53,23 @@ import { PrivacyController } from './modules/privacy/controller';
 import { PrivacyService } from './modules/privacy/service';
 import { OnboardingController } from './modules/onboarding/controller';
 import { OnboardingService } from './modules/onboarding/service';
+import { CustomerController } from './modules/customer/controller';
+import { CustomerService } from './modules/customer/service';
 
 import { env } from './config/env';
 
 const app: Application = express();
+// Enable reverse proxy support for accurate IP detection (X-Forwarded-For)
+app.set('trust proxy', 1);
+
+export function getClientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
 const PORT = env.PORT;
 const API_PREFIX = env.API_PREFIX;
 
@@ -119,7 +133,12 @@ app.use(cors({
 app.use(compression());
 
 // Request parsing
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.text({ type: ['text/plain', 'text/plain;charset=UTF-8'], limit: '1mb' }));
 
@@ -147,13 +166,31 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-// Global rate limiting
+// Global API rate limiting
+// Protects endpoints without blocking health checks, preflight requests, or auth routes (which have dedicated limiters)
 const globalLimiter = rateLimit({
   windowMs: env.RATE_LIMIT_WINDOW_MS,
-  max: env.RATE_LIMIT_MAX_REQUESTS,
-  message: { success: false, error: 'Too many requests, please try again later' },
+  max: env.NODE_ENV === 'production' ? env.RATE_LIMIT_MAX_REQUESTS : 5000,
+  message: { success: false, error: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false, xForwardedForHeader: false },
+  keyGenerator: (req: Request) => getClientIp(req),
+  skip: (req: Request) => {
+    // Never rate limit CORS preflight requests
+    if (req.method === 'OPTIONS') return true;
+    // Never rate limit health checks
+    if (req.path.startsWith('/health')) return true;
+    // Auth endpoints (/auth/login, /auth/register, /auth/forgot-password) have their own isolated rate limiters
+    if (
+      req.path.includes('/auth/login') ||
+      req.path.includes('/auth/register') ||
+      req.path.includes('/auth/forgot-password')
+    ) {
+      return true;
+    }
+    return false;
+  },
 });
 app.use(globalLimiter);
 
@@ -364,6 +401,10 @@ const privacyController = new PrivacyController(privacyService);
 const onboardingService = new OnboardingService(supabaseAdmin);
 const onboardingController = new OnboardingController(onboardingService);
 
+// Customer module
+const customerService = new CustomerService(supabaseAdmin);
+const customerController = new CustomerController(customerService);
+
 // ============================================================================
 // MOUNT ROUTES
 // ============================================================================
@@ -374,6 +415,18 @@ app.use(`${API_PREFIX}/auth`, createAuthRoutes(authController, authMiddlewareIns
 // Review routes (public customer flow + protected for business)
 app.use(`${API_PREFIX}/review`, createReviewRoutes(reviewController, authMiddlewareInstance));
 app.use(`${API_PREFIX}`, createReviewRoutes(reviewController, authMiddlewareInstance));
+
+// Razorpay Payment endpoints
+app.post(`${API_PREFIX}/payments/razorpay/order`, authMiddlewareInstance.authenticate, subscriptionController.createRazorpayOrder);
+app.post(`/api/payments/razorpay/order`, authMiddlewareInstance.authenticate, subscriptionController.createRazorpayOrder);
+app.post(`${API_PREFIX}/payments/razorpay/create-order`, authMiddlewareInstance.authenticate, subscriptionController.createRazorpayOrder);
+app.post(`${API_PREFIX}/payments/razorpay/verify`, authMiddlewareInstance.authenticate, subscriptionController.verifyRazorpayPayment);
+app.post(`/api/payments/razorpay/verify`, authMiddlewareInstance.authenticate, subscriptionController.verifyRazorpayPayment);
+app.post(`${API_PREFIX}/payments/razorpay/verify-payment`, authMiddlewareInstance.authenticate, subscriptionController.verifyRazorpayPayment);
+app.post(`${API_PREFIX}/payments/razorpay/webhook`, subscriptionController.handleRazorpayWebhook);
+app.post(`/api/payments/razorpay/webhook`, subscriptionController.handleRazorpayWebhook);
+app.use(`${API_PREFIX}/subscription`, createSubscriptionRoutes(subscriptionController, authMiddlewareInstance));
+app.use(`${API_PREFIX}/subscriptions`, createSubscriptionRoutes(subscriptionController, authMiddlewareInstance));
 
 // Business routes (protected)
 app.use(`${API_PREFIX}`, createBusinessRoutes(businessController, authMiddlewareInstance));
@@ -386,9 +439,7 @@ app.use(`${API_PREFIX}`, createQRRoutes(qrController, authMiddlewareInstance));
 app.use(`${API_PREFIX}/analytics`, createAnalyticsRoutes(analyticsController, authMiddlewareInstance));
 app.use(`${API_PREFIX}`, createAnalyticsRoutes(analyticsController, authMiddlewareInstance));
 
-// Subscription routes (protected)
-app.use(`${API_PREFIX}/subscription`, createSubscriptionRoutes(subscriptionController, authMiddlewareInstance));
-app.use(`${API_PREFIX}/subscriptions`, createSubscriptionRoutes(subscriptionController, authMiddlewareInstance));
+// Legacy subscription root fallback
 app.use(`${API_PREFIX}`, createSubscriptionRoutes(subscriptionController, authMiddlewareInstance));
 
 // Team routes (protected)
@@ -407,6 +458,10 @@ app.use(`${API_PREFIX}/privacy`, createPrivacyRoutes(privacyController, authMidd
 // Onboarding routes (protected)
 app.use(`${API_PREFIX}/onboarding`, createOnboardingRoutes(supabaseAdmin, authService));
 app.use(`${API_PREFIX}`, createOnboardingRoutes(supabaseAdmin, authService));
+
+// Customer routes (protected)
+app.use(`${API_PREFIX}/customers`, createCustomerRoutes(customerController, authMiddlewareInstance));
+app.use(`${API_PREFIX}`, createCustomerRoutes(customerController, authMiddlewareInstance));
 
 // ============================================================================
 // 404 HANDLER

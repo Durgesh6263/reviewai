@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api-client';
-import { cn, formatNumber } from '@/lib/utils';
+import { cn, formatNumber, formatCurrency } from '@/lib/utils';
 
 const formatLimit = (limit: number) => {
   if (limit === -1) return 'Unlimited';
@@ -15,6 +15,7 @@ const formatLimit = (limit: number) => {
 };
 
 interface Plan {
+  id?: string;
   name: string;
   slug: string;
   monthly_qr_scans: number;
@@ -27,6 +28,7 @@ interface Plan {
     priority_support: boolean;
     ai_reviews: boolean;
   };
+  durations?: any;
 }
 
 interface PlansResponse {
@@ -73,10 +75,30 @@ export default function PricingPage() {
     const fetchPlans = async () => {
       try {
         setIsLoading(true);
-        const response = await api.get<PlansResponse>('/subscription/plans');
-        // Sort plans in order: free, starter, pro, enterprise
-        const order = ['free', 'starter', 'pro', 'enterprise'];
-        const sorted = [...response.data].sort((a, b) => order.indexOf(a.slug) - order.indexOf(b.slug));
+        const response: any = await api.get(`/subscription/plans?_t=${Date.now()}`);
+        const rawList = Array.isArray(response?.data) 
+          ? response.data 
+          : (Array.isArray(response?.data?.plans) 
+            ? response.data.plans 
+            : (Array.isArray(response?.plans) ? response.plans : []));
+        const mappedList: Plan[] = rawList.map((p: any) => ({
+          name: p.name,
+          slug: p.id || p.slug,
+          monthly_qr_scans: p.durations?.['1_month']?.monthly_qr_quota ?? p.durations?.['1_month']?.monthly_qr_limit ?? p.monthly_qr_scans ?? -1,
+          monthly_ai_generations: p.durations?.['1_month']?.monthly_ai_quota ?? p.durations?.['1_month']?.monthly_ai_limit ?? p.monthly_ai_generations ?? -1,
+          features: {
+            custom_domain: Boolean(p.features?.custom_domain),
+            advanced_analytics: Boolean(p.features?.advanced_analytics),
+            api_access: Boolean(p.features?.api_access),
+            white_label: Boolean(p.features?.white_label),
+            priority_support: Boolean(p.features?.priority_support),
+            ai_reviews: Boolean(p.features?.ai_generation ?? p.features?.ai_reviews),
+          },
+          durations: p.durations,
+        }));
+        // Sort plans in order: free, starter, base, pro, enterprise, unlimited
+        const order = ['free', 'starter', 'base', 'pro', 'enterprise', 'unlimited'];
+        const sorted = [...mappedList].sort((a, b) => order.indexOf(a.slug) - order.indexOf(b.slug));
         setPlans(sorted);
       } catch (err: any) {
         console.error('Failed to fetch plans:', err);
@@ -95,11 +117,19 @@ export default function PricingPage() {
   };
 
   const getPlanPrice = (plan: Plan) => {
-    // These would come from the backend in a real app
+    if (plan.durations) {
+      const monthly = plan.durations['1_month']?.price_inr ?? 0;
+      const yearly = plan.durations['12_months']
+        ? Math.round(plan.durations['12_months'].price_inr / 12)
+        : Math.round(monthly * 0.8);
+      return { monthly, yearly };
+    }
     const prices: Record<string, { monthly: number; yearly: number }> = {
       free: { monthly: 0, yearly: 0 },
       starter: { monthly: 29, yearly: 24 },
+      base: { monthly: 499, yearly: 399 },
       pro: { monthly: 79, yearly: 65 },
+      unlimited: { monthly: 1499, yearly: 1199 },
       enterprise: { monthly: 199, yearly: 165 },
     };
     return prices[plan.slug] || { monthly: 0, yearly: 0 };
@@ -333,7 +363,7 @@ function PlanCard({ plan, billingPeriod, price, isPopular }: {
         </div>
         <div className="flex items-baseline justify-center gap-1">
           <span className="text-4xl font-bold text-secondary-900 dark:text-white">
-            {isFree ? 'Free' : `$${currentPrice}`}
+            {isFree ? 'Free' : formatCurrency(currentPrice)}
           </span>
           {!isFree && (
             <span className="text-secondary-500 dark:text-secondary-400">{periodLabel}</span>
@@ -341,7 +371,7 @@ function PlanCard({ plan, billingPeriod, price, isPopular }: {
         </div>
         {!isFree && billingPeriod === 'yearly' && (
           <p className="text-center text-sm text-green-600 dark:text-green-400 mt-1">
-            Billed ${price.yearly * 12}/year
+            Billed {formatCurrency(price.yearly * 12)}/year
           </p>
         )}
       </CardHeader>

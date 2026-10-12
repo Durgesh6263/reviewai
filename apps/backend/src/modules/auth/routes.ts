@@ -27,14 +27,14 @@ export function createAuthRoutes(
   // Public routes (no authentication required)
   router.post(
     '/register',
-    middleware.authRateLimit(3, 15 * 60 * 1000), // 3 attempts per 15 minutes
+    middleware.authRateLimit(10, 15 * 60 * 1000), // 10 attempts per 15 minutes
     middleware.validate(registerSchema),
     controller.register
   );
 
   router.post(
     '/login',
-    middleware.authRateLimit(5, 15 * 60 * 1000), // 5 attempts per 15 minutes
+    middleware.authRateLimit(15, 15 * 60 * 1000), // 15 attempts per 15 minutes
     middleware.validate(loginSchema),
     controller.login
   );
@@ -47,7 +47,7 @@ export function createAuthRoutes(
 
   router.post(
     '/forgot-password',
-    middleware.authRateLimit(3, 60 * 60 * 1000), // 3 attempts per hour
+    middleware.authRateLimit(10, 60 * 60 * 1000), // 10 attempts per hour
     middleware.validate(forgotPasswordSchema),
     controller.forgotPassword
   );

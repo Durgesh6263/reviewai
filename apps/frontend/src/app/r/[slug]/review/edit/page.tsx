@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/lib/api-client';
 import { toast } from 'react-hot-toast';
+import { safeSessionStorage } from '@/lib/storage';
 
 const RATING_LABELS = [
   { value: 1, label: 'Terrible', emoji: '😞' },
@@ -78,7 +79,7 @@ export default function ReviewEditPage() {
     } finally {
       setIsSubmitting(false);
       toast.success('Review saved! Preparing submission...');
-      sessionStorage.setItem('review_text', review);
+      safeSessionStorage.setItem('review_text', review);
       router.push(`/r/${slug}/review/complete?lang=${language}&rating=${rating}`);
     }
   };

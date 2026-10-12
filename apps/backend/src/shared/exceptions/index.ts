@@ -51,8 +51,8 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message: string = 'Resource already exists') {
-    super(message, 409, 'CONFLICT');
+  constructor(message: string = 'Resource already exists', details?: Record<string, any>) {
+    super(message, 409, 'CONFLICT', details);
     Object.setPrototypeOf(this, ConflictError.prototype);
   }
 }
@@ -174,14 +174,15 @@ export function errorHandler(
     console.error('Failed to record operational incident in errorHandler:', logErr);
   }
 
-  if (err instanceof AppError) {
-    const isDup = err.code === 'GOOGLE_BUSINESS_ALREADY_REGISTERED';
-    res.status(err.statusCode).json({
+  const anyErr = err as any;
+  if (err instanceof AppError || (anyErr && typeof anyErr === 'object' && anyErr.statusCode && anyErr.code)) {
+    const isDup = anyErr.code === 'GOOGLE_BUSINESS_ALREADY_REGISTERED';
+    res.status(anyErr.statusCode || 500).json({
       success: false,
-      error: err.message,
-      code: err.code,
-      details: err.details,
-      ...(isDup && err.details ? err.details : {}),
+      error: anyErr.message,
+      code: anyErr.code,
+      details: anyErr.details,
+      ...(isDup && anyErr.details ? anyErr.details : {}),
     });
     return;
   }

@@ -31,7 +31,10 @@ import {
   PilotControlCenterBusiness,
 } from './types';
 import { operationalIncidents } from './incident_service';
-import { NotFoundError, ValidationError } from '../../shared/exceptions';
+import { NotFoundError, ValidationError, ConflictError, AuthorizationError } from '../../shared/exceptions';
+import { entitlementService } from '../subscription/entitlement';
+import { planConfigService, PlanDurationKey } from './plan-config-service';
+import { AuthService } from '../auth/service';
 
 export class AdminService {
   private statsCache: { data: AdminStats; expiresAt: number } | null = null;
@@ -981,8 +984,22 @@ export class AdminService {
         owner:users!subscriptions_owner_id_fkey(full_name, email)
       `, { count: 'exact' });
 
-    if (query.search) {
-      queryBuilder = queryBuilder.or(`business.name.ilike.%${query.search}%,owner.full_name.ilike.%${query.search}%,owner.email.ilike.%${query.search}%`);
+    if (query.search && query.search.trim()) {
+      const term = query.search.trim();
+      const [{ data: matchingBiz }, { data: matchingUsers }] = await Promise.all([
+        this.supabase.from('businesses').select('id').or(`name.ilike.%${term}%,slug.ilike.%${term}%`),
+        this.supabase.from('users').select('id').or(`full_name.ilike.%${term}%,email.ilike.%${term}%`),
+      ]);
+      const mBizIds = (matchingBiz || []).map(b => b.id);
+      const mUserIds = (matchingUsers || []).map(u => u.id);
+      if (mBizIds.length > 0 || mUserIds.length > 0) {
+        const filters: string[] = [];
+        if (mBizIds.length > 0) filters.push(`business_id.in.(${mBizIds.join(',')})`);
+        if (mUserIds.length > 0) filters.push(`owner_id.in.(${mUserIds.join(',')})`);
+        queryBuilder = queryBuilder.or(filters.join(','));
+      } else {
+        return { data: [], meta: { total: 0, page, limit, total_pages: 0 } };
+      }
     }
 
     if (query.status && query.status !== 'all') {
@@ -1001,27 +1018,111 @@ export class AdminService {
 
     if (error) throw error;
 
-    const subscriptions: AdminSubscription[] = (data || []).map((s: any) => ({
-      id: s.id,
-      business_id: s.business_id,
-      business_name: s.business?.name || 'Unknown',
-      business_slug: s.business?.slug || 'Unknown',
-      owner_id: s.owner_id,
-      owner_name: s.owner?.full_name || 'Unknown',
-      owner_email: s.owner?.email || 'Unknown',
-      plan: (s.plan_id || 'starter') as any,
-      status: s.status,
-      stripe_subscription_id: s.stripe_subscription_id,
-      stripe_customer_id: s.stripe_customer_id,
-      current_period_start: s.current_period_start,
-      current_period_end: s.current_period_end,
-      cancel_at_period_end: s.cancel_at_period_end,
-      trial_end: s.trial_end,
-      quantity: s.quantity,
-      monthly_price: s.price_cents ? s.price_cents / 100 : 0,
-      features: s.metadata?.features || {},
-      created_at: s.created_at,
-      updated_at: s.updated_at,
+    const subscriptions: AdminSubscription[] = await Promise.all((data || []).map(async (s: any) => {
+      const meta = s.metadata || {};
+      const ent = await entitlementService.getBusinessEntitlement(s.business_id);
+
+      let displayStatus: 'FREE_TRIAL' | 'ACTIVE' | 'EXPIRED' | 'CANCELED' | 'SUSPENDED' | 'QR_QUOTA_EXHAUSTED' | 'AI_QUOTA_EXHAUSTED' = 'ACTIVE';
+      if (ent.status === 'canceled') {
+        displayStatus = 'CANCELED';
+      } else if (ent.status === 'suspended') {
+        displayStatus = 'SUSPENDED';
+      } else if (!ent.is_active) {
+        if (
+          ent.exhaustion_reason === 'QR_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'PLAN_QR_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'TRIAL_QR_QUOTA_EXHAUSTED'
+        ) {
+          displayStatus = 'QR_QUOTA_EXHAUSTED';
+        } else if (
+          ent.exhaustion_reason === 'AI_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'PLAN_AI_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'TRIAL_AI_QUOTA_EXHAUSTED'
+        ) {
+          displayStatus = 'AI_QUOTA_EXHAUSTED';
+        } else {
+          displayStatus = 'EXPIRED';
+        }
+      } else if (ent.is_trial || ent.status === 'trialing') {
+        displayStatus = 'FREE_TRIAL';
+      } else {
+        displayStatus = 'ACTIVE';
+      }
+
+      let exhaustionMessage: string | null = null;
+      if (!ent.is_active) {
+        if (
+          ent.exhaustion_reason === 'QR_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'PLAN_QR_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'TRIAL_QR_QUOTA_EXHAUSTED'
+        ) {
+          exhaustionMessage = 'Your QR scan quota has been exhausted.';
+        } else if (
+          ent.exhaustion_reason === 'AI_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'PLAN_AI_QUOTA_EXHAUSTED' ||
+          ent.exhaustion_reason === 'TRIAL_AI_QUOTA_EXHAUSTED'
+        ) {
+          exhaustionMessage = 'Your AI generation quota has been exhausted.';
+        } else {
+          exhaustionMessage = 'Your subscription has expired.';
+        }
+      }
+
+      return {
+        id: s.id,
+        business_id: s.business_id,
+        business_name: s.business?.name || 'Unknown',
+        business_slug: s.business?.slug || 'Unknown',
+        owner_id: s.owner_id,
+        owner_name: s.owner?.full_name || 'Unknown',
+        owner_email: s.owner?.email || 'Unknown',
+        plan: (s.plan_id || 'starter') as any,
+        plan_name: ent.plan_name,
+        plan_version_id: ent.plan_version_id,
+        duration: meta.duration || (ent.duration_months ? `${ent.duration_months}_months` : '6_months'),
+        duration_months: ent.duration_months,
+        status: displayStatus,
+        display_status: displayStatus,
+        raw_status: ent.status,
+        is_active: ent.is_active,
+        stripe_subscription_id: s.stripe_subscription_id,
+        stripe_customer_id: s.stripe_customer_id,
+        current_period_start: ent.current_period_start,
+        current_period_end: ent.current_period_end,
+        start_date: ent.start_date,
+        end_date: ent.end_date,
+        next_monthly_reset: ent.next_monthly_reset,
+        current_period_index: ent.current_period_index,
+        days_remaining: ent.days_remaining,
+        monthly_qr_limit: ent.monthly_qr_quota,
+        monthly_ai_limit: ent.monthly_ai_quota,
+        current_month_qr_used: ent.current_month_qr_used,
+        current_month_ai_used: ent.current_month_ai_used,
+        current_month_qr_remaining: ent.current_month_qr_remaining,
+        current_month_ai_remaining: ent.current_month_ai_remaining,
+        total_qr_quota: ent.total_qr_quota,
+        used_qr: ent.used_qr,
+        remaining_qr: ent.remaining_qr,
+        total_ai_quota: ent.total_ai_quota,
+        used_ai: ent.used_ai,
+        remaining_ai: ent.remaining_ai,
+        exhaustion_reason: ent.exhaustion_reason,
+        exhaustion_message: exhaustionMessage,
+        cancel_at_period_end: s.cancel_at_period_end,
+        trial_end: s.trial_end,
+        quantity: s.quantity,
+        monthly_price: ent.price_inr,
+        price_paid: ent.price_inr,
+        features: ent.features,
+        history: meta.history || [],
+        monthly_history: ent.monthly_history || [],
+        razorpay_order_id: meta.razorpay_order_id || null,
+        razorpay_payment_id: meta.razorpay_payment_id || null,
+        payment_status: meta.payment_status || (ent.is_trial ? 'TRIAL' : (meta.razorpay_payment_id ? 'SUCCESS' : 'PAID')),
+        payment_date: meta.payment_date || meta.activated_at || s.created_at,
+        created_at: s.created_at,
+        updated_at: s.updated_at,
+      };
     }));
 
     return {
@@ -1035,64 +1136,380 @@ export class AdminService {
     };
   }
 
-  async getSubscriptionStats(): Promise<AdminSubscriptionStats> {
-    const [
-      { count: total },
-      { count: active },
-      { count: pastDue },
-      { count: canceled },
-      { count: trialing },
-      { data: planDist },
-      { data: statusDist },
-      { data: mrrData },
-    ] = await Promise.all([
-      this.supabase.from('subscriptions').select('*', { count: 'exact', head: true }),
-      this.supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-      this.supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'past_due'),
-      this.supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'canceled'),
-      this.supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'trialing'),
-      this.supabase.from('subscriptions').select('plan_id').eq('status', 'active'),
-      this.supabase.from('subscriptions').select('status'),
-      this.supabase.from('subscriptions').select('price_cents').eq('status', 'active'),
-    ]);
+  async getSubscriptionStats(query?: import('./types').AdminSubscriptionStatsQuery): Promise<import('./types').AdminSubscriptionStats> {
+    // 1. Fetch all client users (excluding admin accounts and deleted users)
+    const { data: usersData, error: usersErr } = await this.supabase
+      .from('users')
+      .select('id, full_name, email, role, last_login_at, created_at, updated_at')
+      .neq('role', 'admin')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
 
-    const mrr = mrrData?.reduce((sum: number, s: any) => sum + ((s.price_cents || 0) / 100), 0) || 0;
+    if (usersErr) throw usersErr;
+    const uList = usersData || [];
+    const uIds = uList.map(u => u.id);
 
-    const planCounts: Record<string, number> = {};
-    planDist?.forEach((p: any) => {
-      if (p.plan_id) {
-        planCounts[p.plan_id] = (planCounts[p.plan_id] || 0) + 1;
+    // 2. Fetch all businesses owned by these users
+    const { data: businessesData, error: bErr } = await this.supabase
+      .from('businesses')
+      .select('id, name, slug, owner_id, status, created_at, updated_at')
+      .in('owner_id', uIds.length > 0 ? uIds : ['00000000-0000-0000-0000-000000000000'])
+      .is('deleted_at', null);
+
+    if (bErr) throw bErr;
+    const bList = businessesData || [];
+    const bIds = bList.map(b => b.id);
+
+    // 3. Fetch latest subscriptions for these businesses
+    const { data: subsData, error: subsErr } = await this.supabase
+      .from('subscriptions')
+      .select('*')
+      .in('business_id', bIds.length > 0 ? bIds : ['00000000-0000-0000-0000-000000000000'])
+      .order('created_at', { ascending: false });
+
+    if (subsErr) throw subsErr;
+
+    const latestSubMap = new Map<string, any>();
+    (subsData || []).forEach(sub => {
+      if (!latestSubMap.has(sub.business_id)) {
+        latestSubMap.set(sub.business_id, sub);
       }
     });
 
-    const statusCounts: Record<string, number> = {};
-    statusDist?.forEach((s: any) => {
-      statusCounts[s.status] = (statusCounts[s.status] || 0) + 1;
+    // 4. Build authoritative entitlement snapshots for all businesses
+    const bizEntitlementMap = new Map<string, import('../subscription/entitlement').BusinessEntitlement>();
+    for (const b of bList) {
+      const ent = await entitlementService.getBusinessEntitlement(b.id);
+      bizEntitlementMap.set(b.id, ent);
+    }
+
+    // 5. Build user-wise subscription usage records and distributions
+    let totalMRR = 0;
+    const planCounts: Record<string, number> = {
+      'Base': 0,
+      'Pro': 0,
+      'Unlimited': 0,
+      'Free Trial': 0,
+    };
+    const statusCounts: Record<string, number> = {
+      'ACTIVE': 0,
+      'FREE_TRIAL': 0,
+      'EXPIRED': 0,
+      'CANCELED': 0,
+      'SUSPENDED': 0,
+    };
+
+    let activeUserCount = 0;
+    let trialingUserCount = 0;
+    let pastDueUserCount = 0;
+    let canceledUserCount = 0;
+
+    const userSubscriptions: import('./types').AdminUserSubscriptionUsage[] = uList.map((user: any) => {
+      const userBusinesses = bList.filter(b => b.owner_id === user.id);
+      const businessCount = userBusinesses.length;
+
+      let totalMonthlyQrLimit = 0;
+      let totalQrUsed = 0;
+      let totalQrRemaining = 0;
+      let totalMonthlyAiLimit = 0;
+      let totalAiUsed = 0;
+      let totalAiRemaining = 0;
+      let hasUnlimitedQr = false;
+      let hasUnlimitedAi = false;
+
+      const businessesDetail = userBusinesses.map(b => {
+        const ent = bizEntitlementMap.get(b.id);
+        const qrLimit = ent?.monthly_qr_quota ?? 0;
+        const qrUsed = ent?.current_month_qr_used ?? 0;
+        const qrRemaining = ent?.current_month_qr_remaining ?? 0;
+        const qrPercent = qrLimit > 0 ? Math.min(100, Math.round((qrUsed / qrLimit) * 1000) / 10) : 0;
+
+        const aiLimit = ent?.monthly_ai_quota ?? 0;
+        const aiUsed = ent?.current_month_ai_used ?? 0;
+        const aiRemaining = ent?.current_month_ai_remaining ?? 0;
+        const aiPercent = aiLimit > 0 ? Math.min(100, Math.round((aiUsed / aiLimit) * 1000) / 10) : 0;
+
+        if (qrLimit === -1) hasUnlimitedQr = true;
+        else totalMonthlyQrLimit += qrLimit;
+
+        if (aiLimit === -1) hasUnlimitedAi = true;
+        else totalMonthlyAiLimit += aiLimit;
+
+        totalQrUsed += qrUsed;
+        totalAiUsed += aiUsed;
+        if (qrRemaining === -1) hasUnlimitedQr = true;
+        else totalQrRemaining += qrRemaining;
+
+        if (aiRemaining === -1) hasUnlimitedAi = true;
+        else totalAiRemaining += aiRemaining;
+
+        // MRR contribution for active paid subscriptions
+        if (ent && !ent.is_trial && ent.status === 'active') {
+          const durationMonths = ent.duration_months || 1;
+          const monthlyPrice = (ent.price_inr || 0) / durationMonths;
+          totalMRR += monthlyPrice;
+        }
+
+        return {
+          id: b.id,
+          name: b.name,
+          slug: b.slug,
+          plan: ent?.plan_name || 'Free Trial',
+          duration: ent?.duration_months ? `${ent.duration_months} Months` : (ent?.duration_days ? `${ent.duration_days} Days` : '14 Days'),
+          status: ent?.status || b.status || 'inactive',
+          monthly_qr_limit: qrLimit,
+          qr_used: qrUsed,
+          qr_remaining: qrRemaining,
+          qr_usage_percent: qrPercent,
+          monthly_ai_limit: aiLimit,
+          ai_used: aiUsed,
+          ai_remaining: aiRemaining,
+          ai_usage_percent: aiPercent,
+          expiry_date: ent?.end_date || null,
+        };
+      });
+
+      // Primary Plan, Duration, Status, and Expiry Date for User
+      let primaryPlan = 'Free Trial';
+      let primaryDuration = '14 Days';
+      let displayStatus = 'FREE_TRIAL';
+      let primaryExpiry: string | null = null;
+
+      if (businessesDetail.length > 0) {
+        const activeSub = businessesDetail.find(b => b.status === 'active');
+        const trialingSub = businessesDetail.find(b => b.status === 'trialing');
+        const expiredSub = businessesDetail.find(b => b.status === 'expired');
+        const canceledSub = businessesDetail.find(b => b.status === 'canceled');
+
+        if (activeSub) {
+          primaryPlan = activeSub.plan;
+          primaryDuration = activeSub.duration;
+          displayStatus = 'ACTIVE';
+          primaryExpiry = activeSub.expiry_date;
+        } else if (trialingSub) {
+          primaryPlan = trialingSub.plan;
+          primaryDuration = trialingSub.duration;
+          displayStatus = 'FREE_TRIAL';
+          primaryExpiry = trialingSub.expiry_date;
+        } else if (expiredSub) {
+          primaryPlan = expiredSub.plan;
+          primaryDuration = expiredSub.duration;
+          displayStatus = 'EXPIRED';
+          primaryExpiry = expiredSub.expiry_date;
+        } else if (canceledSub) {
+          primaryPlan = canceledSub.plan;
+          primaryDuration = canceledSub.duration;
+          displayStatus = 'CANCELED';
+          primaryExpiry = canceledSub.expiry_date;
+        } else {
+          primaryPlan = businessesDetail[0].plan;
+          primaryDuration = businessesDetail[0].duration;
+          displayStatus = businessesDetail[0].status.toUpperCase();
+          primaryExpiry = businessesDetail[0].expiry_date;
+        }
+      } else {
+        primaryPlan = 'None';
+        primaryDuration = '-';
+        displayStatus = 'FREE_TRIAL';
+      }
+
+      // Map to standard plan distribution categories
+      const normalizedPlan = primaryPlan.toLowerCase();
+      if (normalizedPlan.includes('unlimited')) {
+        planCounts['Unlimited'] = (planCounts['Unlimited'] || 0) + 1;
+      } else if (normalizedPlan.includes('pro')) {
+        planCounts['Pro'] = (planCounts['Pro'] || 0) + 1;
+      } else if (normalizedPlan.includes('base')) {
+        planCounts['Base'] = (planCounts['Base'] || 0) + 1;
+      } else {
+        planCounts['Free Trial'] = (planCounts['Free Trial'] || 0) + 1;
+      }
+
+      // Map to status distribution categories
+      if (displayStatus === 'ACTIVE') {
+        statusCounts['ACTIVE'] = (statusCounts['ACTIVE'] || 0) + 1;
+        activeUserCount++;
+      } else if (displayStatus === 'FREE_TRIAL') {
+        statusCounts['FREE_TRIAL'] = (statusCounts['FREE_TRIAL'] || 0) + 1;
+        trialingUserCount++;
+      } else if (displayStatus === 'EXPIRED') {
+        statusCounts['EXPIRED'] = (statusCounts['EXPIRED'] || 0) + 1;
+      } else if (displayStatus === 'CANCELED') {
+        statusCounts['CANCELED'] = (statusCounts['CANCELED'] || 0) + 1;
+        canceledUserCount++;
+      } else {
+        statusCounts['SUSPENDED'] = (statusCounts['SUSPENDED'] || 0) + 1;
+      }
+
+      const finalQrLimit = hasUnlimitedQr ? -1 : totalMonthlyQrLimit;
+      const finalAiLimit = hasUnlimitedAi ? -1 : totalMonthlyAiLimit;
+      const finalQrRemaining = hasUnlimitedQr ? -1 : totalQrRemaining;
+      const finalAiRemaining = hasUnlimitedAi ? -1 : totalAiRemaining;
+
+      const userQrPercent = finalQrLimit > 0 
+        ? Math.min(100, Math.round((totalQrUsed / finalQrLimit) * 1000) / 10) 
+        : 0;
+
+      const userAiPercent = finalAiLimit > 0 
+        ? Math.min(100, Math.round((totalAiUsed / finalAiLimit) * 1000) / 10) 
+        : 0;
+
+      return {
+        user_id: user.id,
+        user_name: user.full_name || 'Business Owner',
+        email: user.email,
+        business_count: businessCount,
+        plan: primaryPlan,
+        duration: primaryDuration,
+        subscription_status: displayStatus,
+        monthly_qr_limit: finalQrLimit,
+        qr_used: totalQrUsed,
+        qr_remaining: finalQrRemaining,
+        qr_usage_percent: userQrPercent,
+        monthly_ai_limit: finalAiLimit,
+        ai_used: totalAiUsed,
+        ai_remaining: finalAiRemaining,
+        ai_usage_percent: userAiPercent,
+        expiry_date: primaryExpiry,
+        businesses: businessesDetail,
+      };
     });
 
+    // 6. Filtering for user subscriptions list
+    let filteredUsers = userSubscriptions;
+
+    if (query?.search && query.search.trim()) {
+      const term = query.search.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.user_name.toLowerCase().includes(term) ||
+        u.email.toLowerCase().includes(term) ||
+        (u.businesses && u.businesses.some((b: any) => b.name.toLowerCase().includes(term)))
+      );
+    }
+
+    if (query?.plan && query.plan !== 'all') {
+      const pTerm = query.plan.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.plan.toLowerCase().includes(pTerm) ||
+        (u.businesses && u.businesses.some((b: any) => b.plan.toLowerCase().includes(pTerm)))
+      );
+    }
+
+    if (query?.status && query.status !== 'all') {
+      const sTerm = query.status.trim().toUpperCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.subscription_status === sTerm ||
+        (u.businesses && u.businesses.some((b: any) => b.status.toUpperCase() === sTerm))
+      );
+    }
+
+    const roundedMRR = Math.round(totalMRR);
+
     return {
-      total_subscriptions: total || 0,
-      active_subscriptions: active || 0,
-      past_due_subscriptions: pastDue || 0,
-      canceled_subscriptions: canceled || 0,
-      trialing_subscriptions: trialing || 0,
-      mrr,
-      arr: mrr * 12,
+      total_subscriptions: uList.length,
+      active_subscriptions: activeUserCount,
+      past_due_subscriptions: pastDueUserCount,
+      canceled_subscriptions: canceledUserCount,
+      trialing_subscriptions: trialingUserCount,
+      mrr: roundedMRR,
+      arr: roundedMRR * 12,
       plan_distribution: Object.entries(planCounts).map(([plan, count]) => ({ plan, count })),
       status_distribution: Object.entries(statusCounts).map(([status, count]) => ({ status, count })),
+      user_subscriptions: filteredUsers,
     };
   }
 
-  async updateSubscriptionPlan(id: string, plan: string): Promise<AdminSubscription> {
-    const { data, error } = await this.supabase
+  async updateSubscriptionPlan(
+    id: string,
+    plan?: string,
+    durationMonths: 1 | 6 | 12 = 6,
+    versionNumber?: number,
+    adminUserId: string = 'admin',
+    customLimits?: { monthly_qr_limit?: number; monthly_ai_limit?: number; preserve_usage?: boolean }
+  ): Promise<AdminSubscription> {
+    const { data: sub } = await this.supabase
       .from('subscriptions')
-      .update({ plan_id: plan })
+      .select('*')
       .eq('id', id)
-      .select()
       .single();
 
-    if (error) throw error;
-    return data;
+    if (!sub) {
+      throw new Error(`Subscription ${id} not found`);
+    }
+
+    const currentMeta = (sub.metadata as any) || {};
+    const existingQrUsed = currentMeta.current_month_qr_used !== undefined ? Number(currentMeta.current_month_qr_used) : 0;
+    const existingAiUsed = currentMeta.current_month_ai_used !== undefined ? Number(currentMeta.current_month_ai_used) : 0;
+
+    // Direct monthly limit update by Admin
+    if (customLimits?.monthly_qr_limit !== undefined || customLimits?.monthly_ai_limit !== undefined) {
+      const newQrLimit = customLimits.monthly_qr_limit !== undefined ? Number(customLimits.monthly_qr_limit) : (currentMeta.monthly_qr_quota ?? 200);
+      const newAiLimit = customLimits.monthly_ai_limit !== undefined ? Number(customLimits.monthly_ai_limit) : (currentMeta.monthly_ai_quota ?? 100);
+
+      const updatedMeta = {
+        ...currentMeta,
+        monthly_qr_quota: newQrLimit,
+        monthly_qr_limit: newQrLimit,
+        allocated_qr_quota: newQrLimit,
+        monthly_ai_quota: newAiLimit,
+        monthly_ai_limit: newAiLimit,
+        allocated_ai_quota: newAiLimit,
+        // Preserve existing usage
+        current_month_qr_used: existingQrUsed,
+        current_month_ai_used: existingAiUsed,
+        used_qr_quota: existingQrUsed,
+        used_ai_quota: existingAiUsed,
+        remaining_qr_quota: newQrLimit === -1 ? -1 : Math.max(0, newQrLimit - existingQrUsed),
+        remaining_ai_quota: newAiLimit === -1 ? -1 : Math.max(0, newAiLimit - existingAiUsed),
+        updated_by: adminUserId,
+      };
+
+      const { data: updatedSub, error: updateErr } = await this.supabase
+        .from('subscriptions')
+        .update({
+          metadata: updatedMeta,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select('*')
+        .single();
+
+      if (updateErr) throw updateErr;
+      return updatedSub;
+    }
+
+    if (plan && ['base', 'pro', 'unlimited'].includes(plan.toLowerCase())) {
+      const validPlan = plan.toLowerCase() as 'base' | 'pro' | 'unlimited';
+      await entitlementService.activatePlan({
+        businessId: sub.business_id,
+        ownerId: sub.owner_id,
+        planId: validPlan,
+        durationMonths,
+        versionNumber,
+        assignedBy: adminUserId,
+        preserveUsage: customLimits?.preserve_usage ?? true,
+      });
+      const { data: updatedSub } = await this.supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('id', id)
+        .single();
+      return updatedSub;
+    }
+
+    if (plan) {
+      const { data, error } = await this.supabase
+        .from('subscriptions')
+        .update({ plan_id: plan })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    }
+
+    return sub;
   }
 
   async cancelSubscription(id: string): Promise<void> {
@@ -1603,18 +2020,19 @@ export class AdminService {
         current_plan,
         status,
         reason,
+        message,
         admin_notes,
         reviewed_by,
         reviewed_at,
         created_at,
         updated_at,
         business:businesses!upgrade_requests_business_id_fkey(name, slug, owner_id),
-        owner:users!upgrade_requests_owner_id_fkey(name, email),
-        reviewer:users!upgrade_requests_reviewed_by_fkey(name)
+        owner:users!upgrade_requests_owner_id_fkey(full_name, email),
+        reviewer:users!upgrade_requests_reviewed_by_fkey(full_name)
       `, { count: 'exact' });
 
     if (query.search) {
-      queryBuilder = queryBuilder.or(`business.name.ilike.%${query.search}%,business.slug.ilike.%${query.search}%,owner.name.ilike.%${query.search}%,owner.email.ilike.%${query.search}%`);
+      queryBuilder = queryBuilder.or(`business.name.ilike.%${query.search}%,business.slug.ilike.%${query.search}%,owner.full_name.ilike.%${query.search}%,owner.email.ilike.%${query.search}%`);
     }
 
     if (query.status && query.status !== 'all') {
@@ -1633,24 +2051,44 @@ export class AdminService {
 
     if (error) throw error;
 
-    const requests: AdminUpgradeRequest[] = (data || []).map((r: any) => ({
-      id: r.id,
-      business_id: r.business_id,
-      business_name: r.business?.name || 'Unknown',
-      business_slug: r.business?.slug || 'Unknown',
-      owner_id: r.business?.owner_id || r.owner?.id || 'Unknown',
-      owner_name: r.owner?.name || 'Unknown',
-      owner_email: r.owner?.email || 'Unknown',
-      requested_plan: r.requested_plan,
-      current_plan: r.current_plan,
-      status: r.status,
-      reason: r.reason,
-      admin_notes: r.admin_notes,
-      reviewed_by: r.reviewed_by,
-      reviewed_at: r.reviewed_at,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    }));
+    const requests: AdminUpgradeRequest[] = (data || []).map((r: any) => {
+      let meta: any = {};
+      try {
+        if (r.message && typeof r.message === 'string' && r.message.startsWith('{')) {
+          meta = JSON.parse(r.message);
+        }
+      } catch (e) {}
+
+      return {
+        id: r.id,
+        business_id: r.business_id,
+        business_name: r.business?.name || 'Unknown',
+        business_slug: r.business?.slug || 'Unknown',
+        owner_id: r.business?.owner_id || r.owner?.id || 'Unknown',
+        owner_name: r.owner?.full_name || 'Unknown',
+        owner_email: r.owner?.email || 'Unknown',
+        requested_plan: r.requested_plan,
+        requested_plan_name: meta.plan_name || r.requested_plan,
+        current_plan: r.current_plan,
+        current_plan_name: r.current_plan,
+        current_plan_slug: r.current_plan,
+        status: r.status,
+        reason: r.reason,
+        message: meta.note || r.message,
+        plan_name: meta.plan_name || r.requested_plan,
+        plan_version_id: meta.plan_version_id,
+        duration_months: meta.duration_months,
+        price_inr: meta.price_inr,
+        allocated_qr_quota: meta.allocated_qr_quota,
+        allocated_ai_quota: meta.allocated_ai_quota,
+        max_qr_codes: meta.max_qr_codes,
+        admin_notes: r.admin_notes,
+        reviewed_by: r.reviewed_by,
+        reviewed_at: r.reviewed_at,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      };
+    });
 
     return {
       data: requests,
@@ -1673,14 +2111,15 @@ export class AdminService {
         current_plan,
         status,
         reason,
+        message,
         admin_notes,
         reviewed_by,
         reviewed_at,
         created_at,
         updated_at,
         business:businesses!upgrade_requests_business_id_fkey(name, slug, owner_id),
-        owner:users!upgrade_requests_owner_id_fkey(id, name, email),
-        reviewer:users!upgrade_requests_reviewed_by_fkey(name)
+        owner:users!upgrade_requests_owner_id_fkey(id, full_name, email),
+        reviewer:users!upgrade_requests_reviewed_by_fkey(full_name)
       `)
       .eq('id', id)
       .single();
@@ -1690,18 +2129,61 @@ export class AdminService {
     const business = Array.isArray(data.business) ? data.business[0] : data.business;
     const owner = Array.isArray(data.owner) ? data.owner[0] : data.owner;
 
+    let meta: any = {};
+    try {
+      if (data.message && typeof data.message === 'string' && data.message.startsWith('{')) {
+        meta = JSON.parse(data.message);
+      }
+    } catch (e) {}
+
+    let currentSubStatus = 'unknown';
+    let currentQrUsed = 0;
+    let currentQrLimit = 0;
+    let currentAiUsed = 0;
+    let currentAiLimit = 0;
+    let currentPeriodEnd: string | undefined = undefined;
+
+    if (data.business_id) {
+      try {
+        const ent = await entitlementService.getBusinessEntitlement(data.business_id);
+        currentSubStatus = ent.is_trial ? 'trial' : ent.status;
+        currentQrUsed = ent.used_qr;
+        currentQrLimit = ent.total_qr_quota;
+        currentAiUsed = ent.used_ai;
+        currentAiLimit = ent.total_ai_quota;
+        currentPeriodEnd = ent.end_date || undefined;
+      } catch (e) {}
+    }
+
     return {
       id: data.id,
       business_id: data.business_id,
       business_name: business?.name || 'Unknown',
       business_slug: business?.slug || 'Unknown',
       owner_id: business?.owner_id || owner?.id || 'Unknown',
-      owner_name: owner?.name || 'Unknown',
+      owner_name: owner?.full_name || 'Unknown',
       owner_email: owner?.email || 'Unknown',
       requested_plan: data.requested_plan,
+      requested_plan_name: meta.plan_name || data.requested_plan,
       current_plan: data.current_plan,
+      current_plan_name: data.current_plan,
+      current_plan_slug: data.current_plan,
+      current_subscription_status: currentSubStatus,
+      current_qr_used: currentQrUsed,
+      current_qr_limit: currentQrLimit,
+      current_ai_used: currentAiUsed,
+      current_ai_limit: currentAiLimit,
+      current_period_end: currentPeriodEnd,
       status: data.status,
       reason: data.reason,
+      message: meta.note || data.message,
+      plan_name: meta.plan_name || data.requested_plan,
+      plan_version_id: meta.plan_version_id,
+      duration_months: meta.duration_months,
+      price_inr: meta.price_inr,
+      allocated_qr_quota: meta.allocated_qr_quota,
+      allocated_ai_quota: meta.allocated_ai_quota,
+      max_qr_codes: meta.max_qr_codes,
       admin_notes: data.admin_notes,
       reviewed_by: data.reviewed_by,
       reviewed_at: data.reviewed_at,
@@ -1716,7 +2198,6 @@ export class AdminService {
     adminId: string,
     adminNotes?: string
   ): Promise<AdminUpgradeRequest> {
-    // Use a transaction to atomically update the request and subscription
     const { data: request, error: fetchError } = await this.supabase
       .from('upgrade_requests')
       .select('*, business:businesses!upgrade_requests_business_id_fkey(id, owner_id)')
@@ -1724,23 +2205,190 @@ export class AdminService {
       .single();
 
     if (fetchError) throw fetchError;
-    if (!request) throw new Error('Upgrade request not found');
+    if (!request) throw new NotFoundError('Upgrade request not found');
 
     if (request.status !== 'pending') {
-      throw new Error(`Cannot update request with status: ${request.status}`);
+      throw new ConflictError(`Cannot update request with status: ${request.status}`);
     }
 
-    // Start transaction
-    const { error: transactionError } = await this.supabase.rpc('update_upgrade_request_with_subscription', {
-      p_request_id: id,
-      p_status: status,
-      p_admin_id: adminId,
-      p_admin_notes: adminNotes || null,
-    });
+    // Validate reviewer exists in users to satisfy foreign key constraint
+    let reviewerId: string | null = adminId || null;
+    if (reviewerId) {
+      const { data: u } = await this.supabase.from('users').select('id').eq('id', reviewerId).maybeSingle();
+      if (!u) reviewerId = null;
+    }
 
-    if (transactionError) throw transactionError;
+    if (status === 'approved') {
+      // 1. PREVIOUS SUBSCRIPTION CHECK:
+      // If client has an expired/trial subscription: activate normally.
+      // If another paid subscription is currently ACTIVE: do NOT overwrite it, block activation.
+      const currentEntitlement = await entitlementService.getBusinessEntitlement(request.business_id);
+      if (currentEntitlement && currentEntitlement.is_active && !currentEntitlement.is_trial) {
+        throw new ValidationError('Client currently has an active paid subscription. New plan activation cannot overwrite an active subscription.');
+      }
 
-    // Fetch updated request
+      let meta: any = {};
+      try {
+        if (request.message && typeof request.message === 'string' && request.message.startsWith('{')) {
+          meta = JSON.parse(request.message);
+        }
+      } catch (e) {}
+
+      const rawPlanId = String(meta.plan_id || request.requested_plan || '').toLowerCase().trim();
+      const planAliasMap: Record<string, 'base' | 'pro' | 'unlimited'> = {
+        starter: 'base',
+        base: 'base',
+        professional: 'pro',
+        pro: 'pro',
+        enterprise: 'unlimited',
+        unlimited: 'unlimited',
+      };
+      const planId = planAliasMap[rawPlanId] || 'base';
+
+      // 2. Verify plan exists in config
+      const allPlans = await planConfigService.getPlans();
+      const planDef = allPlans.find(p => p.id === planId);
+      if (!planDef) {
+        throw new NotFoundError(`Configured plan '${planId}' does not exist.`);
+      }
+
+      // 3. Verify plan version exists
+      let targetVersion = planDef.versions.find(v => v.version_number === Number(meta.plan_version_number));
+      if (!targetVersion && meta.plan_version_id) {
+        const vNumMatch = String(meta.plan_version_id).match(/_v(\d+)$/);
+        if (vNumMatch) {
+          targetVersion = planDef.versions.find(v => v.version_number === Number(vNumMatch[1]));
+        }
+      }
+      if (!targetVersion) {
+        targetVersion = planDef.versions.find(v => v.status === 'active') || planDef.versions[0];
+      }
+      if (!targetVersion) {
+        throw new NotFoundError(`No valid configuration version found for plan '${planId}'.`);
+      }
+
+      // 4. Verify duration & quotas from authoritative plan version
+      const durationMonths: 1 | 6 | 12 = ([1, 6, 12].includes(Number(meta.duration_months)) ? Number(meta.duration_months) as 1 | 6 | 12 : 1);
+      const durationKey = `${durationMonths}_months` as PlanDurationKey;
+      const offering = targetVersion.durations[durationKey];
+      if (!offering) {
+        throw new ValidationError(`Duration '${durationMonths} months' is not configured for plan version ${targetVersion.version_number}.`);
+      }
+
+      const authoritativePrice = offering.price_inr ?? Number(meta.price_inr || 0);
+      const authoritativeQrQuota = offering.monthly_qr_quota ?? offering.monthly_qr_limit ?? offering.allocated_qr_quota;
+      const authoritativeAiQuota = offering.monthly_ai_quota ?? offering.monthly_ai_limit ?? offering.allocated_ai_quota;
+      const authoritativeMaxQrCodes = offering.max_qr_codes ?? (planDef.features?.max_qr_codes || 5);
+      const authoritativePlanVersionId = `${planId}_v${targetVersion.version_number}`;
+
+      // 5. ATOMIC DB UPDATE (Prevents double approval & race conditions)
+      const { data: updatedRequest, error: updateError } = await this.supabase
+        .from('upgrade_requests')
+        .update({
+          status: 'approved',
+          reviewed_by: reviewerId,
+          reviewed_at: new Date().toISOString(),
+          admin_notes: adminNotes || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('status', 'pending')
+        .select()
+        .maybeSingle();
+
+      if (updateError) throw updateError;
+      if (!updatedRequest) {
+        throw new ConflictError('Upgrade request is no longer pending or has already been processed.');
+      }
+
+      // 6. ACTIVATE SUBSCRIPTION (Steps 1–4 engine)
+      const ownerId = request.owner_id || request.business?.owner_id;
+      await entitlementService.activatePlan({
+        businessId: request.business_id,
+        ownerId: ownerId,
+        planId: planId,
+        versionNumber: targetVersion.version_number,
+        planVersionId: authoritativePlanVersionId,
+        durationMonths: durationMonths,
+        price: authoritativePrice,
+        qrQuota: authoritativeQrQuota,
+        aiQuota: authoritativeAiQuota,
+        maxQRCodes: authoritativeMaxQrCodes,
+        features: planDef.features,
+        assignedBy: adminId,
+      });
+
+      // 7. AUDIT LOG
+      await this.recordAdminAudit(adminId, 'subscription_request.approved', 'upgrade_request', id, {
+        request_id: id,
+        business_id: request.business_id,
+        user_id: ownerId,
+        admin_id: adminId,
+        action: 'APPROVED',
+        timestamp: new Date().toISOString(),
+        plan_version: authoritativePlanVersionId,
+        plan_id: planId,
+        duration_months: durationMonths,
+        price: authoritativePrice,
+        result: 'SUCCESS_ACTIVATED',
+        admin_notes: adminNotes || null,
+      });
+    } else if (status === 'rejected') {
+      const { data: updatedRequest, error: updateError } = await this.supabase
+        .from('upgrade_requests')
+        .update({
+          status: 'rejected',
+          reviewed_by: reviewerId,
+          reviewed_at: new Date().toISOString(),
+          admin_notes: adminNotes || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('status', 'pending')
+        .select()
+        .maybeSingle();
+
+      if (updateError) throw updateError;
+      if (!updatedRequest) {
+        throw new ConflictError('Upgrade request is no longer pending or has already been processed.');
+      }
+
+      let meta: any = {};
+      try {
+        if (request.message && typeof request.message === 'string' && request.message.startsWith('{')) {
+          meta = JSON.parse(request.message);
+        }
+      } catch (e) {}
+
+      const ownerId = request.owner_id || request.business?.owner_id;
+      await this.recordAdminAudit(adminId, 'subscription_request.rejected', 'upgrade_request', id, {
+        request_id: id,
+        business_id: request.business_id,
+        user_id: ownerId,
+        admin_id: adminId,
+        action: 'REJECTED',
+        timestamp: new Date().toISOString(),
+        plan_version: meta.plan_version_id || request.requested_plan,
+        duration_months: meta.duration_months,
+        price: meta.price_inr,
+        result: 'SUCCESS_REJECTED',
+        admin_notes: adminNotes || null,
+      });
+    } else {
+      const { error: updateError } = await this.supabase
+        .from('upgrade_requests')
+        .update({
+          status: status,
+          reviewed_by: reviewerId,
+          reviewed_at: new Date().toISOString(),
+          admin_notes: adminNotes || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (updateError) throw updateError;
+    }
+
     return this.getUpgradeRequest(id);
   }
 
@@ -2833,7 +3481,7 @@ export class AdminService {
         status,
         settings,
         created_at,
-        subscription:subscriptions(plan_id, status, trial_end, current_period_end)
+        subscription:subscriptions(plan_id, status, trial_end, current_period_end, metadata)
       `)
       .in('owner_id', uIds.length > 0 ? uIds : ['00000000-0000-0000-0000-000000000000'])
       .is('deleted_at', null);
@@ -2941,6 +3589,16 @@ export class AdminService {
         if (b.created_at) activityDates.push(b.created_at);
 
         const sub = Array.isArray(b.subscription) ? b.subscription[0] : b.subscription;
+        const subMeta = sub?.metadata || {};
+        const isTrial = sub?.status === 'trialing' || sub?.plan_id === 'free_trial';
+        const totalQr = subMeta.allocated_qr_quota ?? (isTrial ? 300 : 900);
+        const totalAi = subMeta.allocated_ai_quota ?? (isTrial ? 150 : 450);
+        const usedQr = subMeta.used_qr_quota ?? scans;
+        const usedAi = subMeta.used_ai_quota ?? drafts;
+        const remainingQr = totalQr === -1 ? -1 : Math.max(0, totalQr - usedQr);
+        const remainingAi = totalAi === -1 ? -1 : Math.max(0, totalAi - usedAi);
+        const endMs = sub?.current_period_end ? new Date(sub.current_period_end).getTime() : 0;
+        const daysRemaining = endMs > Date.now() ? Math.ceil((endMs - Date.now()) / 86400000) : 0;
         const rawCategory = (b as any).category || b.settings?.category || (b.name?.toLowerCase().includes('cafe') ? 'cafe' : b.name?.toLowerCase().includes('fitness') ? 'gym' : 'other');
 
         return {
@@ -2950,8 +3608,18 @@ export class AdminService {
           category: rawCategory,
           category_name: rawCategory.charAt(0).toUpperCase() + rawCategory.slice(1),
           status: b.status,
-          plan: sub?.plan_id || 'free',
+          plan: subMeta.plan_name || sub?.plan_id || 'free',
+          plan_version_id: subMeta.plan_version_id || 'v1',
+          duration: subMeta.duration || (subMeta.duration_months ? `${subMeta.duration_months}_months` : '6_months'),
           subscription_status: sub?.status || 'inactive',
+          days_remaining: daysRemaining,
+          total_qr_quota: totalQr,
+          used_qr_quota: usedQr,
+          remaining_qr_quota: remainingQr,
+          total_ai_quota: totalAi,
+          used_ai_quota: usedAi,
+          remaining_ai_quota: remainingAi,
+          exhaustion_reason: subMeta.exhaustion_reason || null,
           created_at: b.created_at,
           total_scans: scans,
           total_sessions: sessions,
@@ -3423,6 +4091,175 @@ export class AdminService {
   }
 
   /**
+   * Section 4C: Admin Permanent User Deletion & Complete Data Cascade
+   * 
+   * Strict safety rules:
+   * 1. Only verified admins can delete users.
+   * 2. Admin cannot delete their own account.
+   * 3. Admin cannot delete another Admin or Super Admin account.
+   * 4. Deletes all user-owned data: businesses, QR codes, scan logs, review sessions,
+   *    generated reviews, analytics, subscriptions, usage records, upgrade requests,
+   *    onboarding records, refresh tokens, user profile.
+   * 5. Anonymizes user reference in payment_history to preserve financial accounting.
+   * 6. Deletes the auth/user account.
+   * 7. Clears all admin, auth, and entitlement caches.
+   */
+  async deleteUser(adminId: string, userId: string): Promise<{ success: boolean; message: string }> {
+    if (!adminId) {
+      throw new AuthorizationError('Authentication required');
+    }
+
+    if (adminId === userId) {
+      throw new ValidationError('Administrators cannot delete their own account');
+    }
+
+    // 1. Verify caller is an administrator
+    const { data: adminCaller } = await this.supabase
+      .from('users')
+      .select('id, role')
+      .eq('id', adminId)
+      .single();
+
+    if (!adminCaller || adminCaller.role !== 'admin') {
+      throw new AuthorizationError('Only platform administrators can delete users');
+    }
+
+    // 2. Fetch target user and ensure target is not an admin
+    const { data: targetUser } = await this.supabase
+      .from('users')
+      .select('id, role, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (!targetUser) {
+      throw new NotFoundError('User');
+    }
+
+    if (targetUser.role === 'admin' || targetUser.email === 'thelastminuteprojectsss@gmail.com') {
+      throw new ValidationError('Admin accounts cannot be deactivated or deleted');
+    }
+
+    // 3. Find all businesses owned by this user
+    const { data: businesses } = await this.supabase
+      .from('businesses')
+      .select('id, slug, logo_url')
+      .eq('owner_id', userId);
+
+    const bizIds = (businesses || []).map((b: any) => b.id);
+
+    // 4. Cascade delete all business-associated data
+    if (bizIds.length > 0) {
+      // a. AI Generated reviews
+      await this.supabase.from('generated_reviews').delete().in('business_id', bizIds);
+
+      // b. Break circular foreign key in scan_logs (fk_scan_logs_session_id)
+      await this.supabase.from('scan_logs').update({ session_id: null }).in('business_id', bizIds);
+
+      // c. Review sessions
+      await this.supabase.from('review_sessions').delete().in('business_id', bizIds);
+
+      // d. Scan logs
+      await this.supabase.from('scan_logs').delete().in('business_id', bizIds);
+
+      // e. Analytics
+      await this.supabase.from('qr_code_analytics').delete().in('business_id', bizIds);
+      await this.supabase.from('business_analytics').delete().in('business_id', bizIds);
+      await this.supabase.from('daily_analytics').delete().in('business_id', bizIds);
+
+      // f. QR codes
+      await this.supabase.from('qr_codes').delete().in('business_id', bizIds);
+
+      // g. Invoices & Subscriptions
+      await this.supabase.from('invoices').delete().in('business_id', bizIds);
+      await this.supabase.from('subscriptions').delete().in('business_id', bizIds);
+
+      // h. Upgrade requests, staff, customers, api keys, webhook events, usage logs
+      await this.supabase.from('upgrade_requests').delete().in('business_id', bizIds);
+      await this.supabase.from('business_staff').delete().in('business_id', bizIds);
+      await this.supabase.from('customers').delete().in('business_id', bizIds);
+      await this.supabase.from('api_keys').delete().in('business_id', bizIds);
+      await this.supabase.from('webhook_events').delete().in('business_id', bizIds);
+      await this.supabase.from('usage_logs').delete().in('business_id', bizIds);
+
+      // i. Finally delete the businesses themselves
+      const { error: bizDeleteErr } = await this.supabase.from('businesses').delete().in('id', bizIds);
+      if (bizDeleteErr) {
+        throw new Error(`Failed to delete user businesses: ${bizDeleteErr.message}`);
+      }
+    }
+
+    // 5. Delete direct user-owned records
+    await this.supabase.from('subscriptions').delete().eq('owner_id', userId);
+    await this.supabase.from('upgrade_requests').delete().eq('owner_id', userId);
+    await this.supabase.from('onboarding_progress').delete().eq('user_id', userId);
+    await this.supabase.from('pilot_feedback').delete().eq('user_id', userId);
+    await this.supabase.from('refresh_tokens').delete().eq('user_id', userId);
+
+    // 6. Payment records: Anonymize user reference in payment_history to preserve financial accounting
+    try {
+      const { data: settings } = await this.supabase
+        .from('admin_settings')
+        .select('id, limits')
+        .limit(1)
+        .maybeSingle();
+
+      if (settings?.limits?.payment_history && Array.isArray(settings.limits.payment_history)) {
+        const limits = settings.limits;
+        limits.payment_history = limits.payment_history.map((p: any) => {
+          if (p.user_id === userId || p.user_email === targetUser.email) {
+            return {
+              ...p,
+              user_id: null,
+              user_email: '[DELETED_USER]',
+              anonymized_at: new Date().toISOString(),
+            };
+          }
+          return p;
+        });
+
+        await this.supabase
+          .from('admin_settings')
+          .update({ limits, updated_at: new Date().toISOString() })
+          .eq('id', settings.id);
+      }
+    } catch (err) {
+      console.warn('Failed to anonymize payment history for deleted user:', err);
+    }
+
+    // 7. Delete the user record
+    const { error: userDeleteErr } = await this.supabase
+      .from('users')
+      .delete()
+      .eq('id', userId);
+
+    if (userDeleteErr) {
+      throw new Error(`Failed to delete user record: ${userDeleteErr.message}`);
+    }
+
+    // 8. Delete user from Supabase Auth if exists
+    try {
+      await this.supabase.auth.admin.deleteUser(userId);
+    } catch {
+      // Non-fatal if Supabase Auth user doesn't exist
+    }
+
+    // 9. Invalidate caches & record audit log
+    this.invalidateAdminCaches();
+    AuthService.invalidateUserCache(userId);
+
+    await this.recordAdminAudit(adminId, 'user.delete', 'user', userId, {
+      deleted_user_email: targetUser.email,
+      businesses_deleted_count: bizIds.length,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: 'User and all associated data have been permanently deleted.',
+    };
+  }
+
+  /**
    * Section 5: Platform-wide Feature Usage
    */
   async getPlatformUsage(query: import('./types').AdminUsageQuery) {
@@ -3494,6 +4331,8 @@ export class AdminService {
 
     const timeSeries = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
+    const userWiseUsage = await this.getUserWiseUsage(query);
+
     return {
       summary: {
         total_scans: totalScans,
@@ -3506,9 +4345,255 @@ export class AdminService {
         active_businesses: activeBizSet.size || businesses?.length || 0,
       },
       time_series: timeSeries,
+      users: userWiseUsage,
       range,
     };
   }
+
+  /**
+   * User-Wise Monthly Quota & Activity Usage
+   * Strictly aggregates current month usage per business and sums per user without double-counting.
+   */
+  async getUserWiseUsage(query: import('./types').AdminUsageQuery): Promise<import('./types').AdminUserUsage[]> {
+    // 1. Fetch all client users (excluding admin accounts and deleted users)
+    const { data: usersData, error: usersErr } = await this.supabase
+      .from('users')
+      .select('id, full_name, email, role, last_login_at, created_at, updated_at')
+      .neq('role', 'admin')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (usersErr) throw usersErr;
+    const uList = usersData || [];
+    const uIds = uList.map(u => u.id);
+
+    // 2. Fetch all businesses owned by these users
+    const { data: businessesData, error: bErr } = await this.supabase
+      .from('businesses')
+      .select('id, name, slug, owner_id, status, created_at, updated_at')
+      .in('owner_id', uIds.length > 0 ? uIds : ['00000000-0000-0000-0000-000000000000'])
+      .is('deleted_at', null);
+
+    if (bErr) throw bErr;
+    const bList = businessesData || [];
+    const bIds = bList.map(b => b.id);
+
+    // 3. Fetch subscriptions for these businesses
+    const { data: subsData, error: subsErr } = await this.supabase
+      .from('subscriptions')
+      .select('*')
+      .in('business_id', bIds.length > 0 ? bIds : ['00000000-0000-0000-0000-000000000000'])
+      .order('created_at', { ascending: false });
+
+    if (subsErr) throw subsErr;
+
+    // Pick latest subscription for each business
+    const latestSubMap = new Map<string, any>();
+    (subsData || []).forEach(sub => {
+      if (!latestSubMap.has(sub.business_id)) {
+        latestSubMap.set(sub.business_id, sub);
+      }
+    });
+
+    // 4. Batch query recent activity timestamps across businesses for last_activity
+    const [
+      { data: scansData },
+      { data: sessionsData },
+      { data: draftsData },
+    ] = await Promise.all([
+      bIds.length > 0
+        ? this.supabase.from('scan_logs').select('business_id, scanned_at').in('business_id', bIds).order('scanned_at', { ascending: false }).limit(200)
+        : Promise.resolve({ data: [] }),
+      bIds.length > 0
+        ? this.supabase.from('review_sessions').select('business_id, started_at').in('business_id', bIds).order('started_at', { ascending: false }).limit(200)
+        : Promise.resolve({ data: [] }),
+      bIds.length > 0
+        ? this.supabase.from('generated_reviews').select('business_id, created_at').in('business_id', bIds).order('created_at', { ascending: false }).limit(200)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const bizActivityMap = new Map<string, string>();
+    (scansData || []).forEach((s: any) => {
+      const cur = bizActivityMap.get(s.business_id);
+      if (!cur || s.scanned_at > cur) bizActivityMap.set(s.business_id, s.scanned_at);
+    });
+    (sessionsData || []).forEach((s: any) => {
+      const cur = bizActivityMap.get(s.business_id);
+      if (!cur || s.started_at > cur) bizActivityMap.set(s.business_id, s.started_at);
+    });
+    (draftsData || []).forEach((d: any) => {
+      const cur = bizActivityMap.get(d.business_id);
+      if (!cur || d.created_at > cur) bizActivityMap.set(d.business_id, d.created_at);
+    });
+
+    // 5. Build authoritative entitlement snapshots for all businesses
+    const bizEntitlementMap = new Map<string, import('../subscription/entitlement').BusinessEntitlement>();
+    for (const b of bList) {
+      const ent = await entitlementService.getBusinessEntitlement(b.id);
+      bizEntitlementMap.set(b.id, ent);
+    }
+
+    // 6. Build user-wise aggregated usage
+    const usersUsage: import('./types').AdminUserUsage[] = uList.map((user: any) => {
+      const userBusinesses = bList.filter(b => b.owner_id === user.id);
+      const businessCount = userBusinesses.length;
+
+      let totalMonthlyQrLimit = 0;
+      let totalQrUsed = 0;
+      let totalQrRemaining = 0;
+      let totalMonthlyAiLimit = 0;
+      let totalAiUsed = 0;
+      let totalAiRemaining = 0;
+      let hasUnlimitedQr = false;
+      let hasUnlimitedAi = false;
+
+      const activityTimestamps: string[] = [user.created_at];
+      if (user.last_login_at) activityTimestamps.push(user.last_login_at);
+
+      const businessesDetail: import('./types').AdminBusinessUsageDetail[] = userBusinesses.map(b => {
+        const ent = bizEntitlementMap.get(b.id);
+        const bLastActivity = bizActivityMap.get(b.id) || b.created_at;
+        if (bLastActivity) activityTimestamps.push(bLastActivity);
+
+        const qrLimit = ent?.monthly_qr_quota ?? 0;
+        const qrUsed = ent?.current_month_qr_used ?? 0;
+        const qrRemaining = ent?.current_month_qr_remaining ?? 0;
+        const qrPercent = qrLimit > 0 ? Math.min(100, Math.round((qrUsed / qrLimit) * 1000) / 10) : 0;
+
+        const aiLimit = ent?.monthly_ai_quota ?? 0;
+        const aiUsed = ent?.current_month_ai_used ?? 0;
+        const aiRemaining = ent?.current_month_ai_remaining ?? 0;
+        const aiPercent = aiLimit > 0 ? Math.min(100, Math.round((aiUsed / aiLimit) * 1000) / 10) : 0;
+
+        if (qrLimit === -1) hasUnlimitedQr = true;
+        else totalMonthlyQrLimit += qrLimit;
+
+        if (aiLimit === -1) hasUnlimitedAi = true;
+        else totalMonthlyAiLimit += aiLimit;
+
+        totalQrUsed += qrUsed;
+        totalAiUsed += aiUsed;
+        if (qrRemaining === -1) hasUnlimitedQr = true;
+        else totalQrRemaining += qrRemaining;
+
+        if (aiRemaining === -1) hasUnlimitedAi = true;
+        else totalAiRemaining += aiRemaining;
+
+        return {
+          id: b.id,
+          name: b.name,
+          slug: b.slug,
+          plan: ent?.plan_name || 'Free Trial',
+          status: ent?.status || b.status || 'inactive',
+          monthly_qr_limit: qrLimit,
+          qr_used: qrUsed,
+          qr_remaining: qrRemaining,
+          qr_usage_percent: qrPercent,
+          monthly_ai_limit: aiLimit,
+          ai_used: aiUsed,
+          ai_remaining: aiRemaining,
+          ai_usage_percent: aiPercent,
+          last_activity: bLastActivity,
+        };
+      });
+
+      // User-level Plan & Status
+      let primaryPlan = 'None';
+      let primaryStatus = 'inactive';
+
+      if (businessesDetail.length > 0) {
+        const activeSub = businessesDetail.find(b => b.status === 'active');
+        const trialingSub = businessesDetail.find(b => b.status === 'trialing');
+        const expiredSub = businessesDetail.find(b => b.status === 'expired');
+
+        if (activeSub) {
+          primaryPlan = activeSub.plan;
+          primaryStatus = 'active';
+        } else if (trialingSub) {
+          primaryPlan = trialingSub.plan;
+          primaryStatus = 'trialing';
+        } else if (expiredSub) {
+          primaryPlan = expiredSub.plan;
+          primaryStatus = 'expired';
+        } else {
+          primaryPlan = businessesDetail[0].plan;
+          primaryStatus = businessesDetail[0].status;
+        }
+
+        const distinctPlans = Array.from(new Set(businessesDetail.map(b => b.plan)));
+        if (distinctPlans.length > 1) {
+          primaryPlan = distinctPlans.join(', ');
+        }
+      }
+
+      // User-level QR & AI limits & percentages
+      const finalQrLimit = hasUnlimitedQr ? -1 : totalMonthlyQrLimit;
+      const finalAiLimit = hasUnlimitedAi ? -1 : totalMonthlyAiLimit;
+      const finalQrRemaining = hasUnlimitedQr ? -1 : totalQrRemaining;
+      const finalAiRemaining = hasUnlimitedAi ? -1 : totalAiRemaining;
+
+      const userQrPercent = finalQrLimit > 0 
+        ? Math.min(100, Math.round((totalQrUsed / finalQrLimit) * 1000) / 10) 
+        : 0;
+
+      const userAiPercent = finalAiLimit > 0 
+        ? Math.min(100, Math.round((totalAiUsed / finalAiLimit) * 1000) / 10) 
+        : 0;
+
+      activityTimestamps.sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+      const lastActivity = activityTimestamps[0] || user.created_at;
+
+      return {
+        user_id: user.id,
+        user_name: user.full_name || 'Business Owner',
+        email: user.email,
+        business_count: businessCount,
+        plan: primaryPlan,
+        subscription_status: primaryStatus,
+        monthly_qr_limit: finalQrLimit,
+        qr_used: totalQrUsed,
+        qr_remaining: finalQrRemaining,
+        qr_usage_percent: userQrPercent,
+        monthly_ai_limit: finalAiLimit,
+        ai_used: totalAiUsed,
+        ai_remaining: finalAiRemaining,
+        ai_usage_percent: userAiPercent,
+        last_activity: lastActivity,
+        businesses: businessesDetail,
+      };
+    });
+
+    // 7. Filtering: Search (name, email, business name), Plan, Subscription Status
+    let filteredUsers = usersUsage;
+
+    if (query.search && query.search.trim()) {
+      const term = query.search.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.user_name.toLowerCase().includes(term) ||
+        u.email.toLowerCase().includes(term) ||
+        u.businesses.some(b => b.name.toLowerCase().includes(term))
+      );
+    }
+
+    if (query.plan && query.plan !== 'all') {
+      const pTerm = query.plan.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.plan.toLowerCase().includes(pTerm) ||
+        u.businesses.some(b => b.plan.toLowerCase().includes(pTerm))
+      );
+    }
+
+    if (query.status && query.status !== 'all') {
+      const sTerm = query.status.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter(u =>
+        u.subscription_status.toLowerCase() === sTerm ||
+        u.businesses.some(b => b.status.toLowerCase() === sTerm)
+      );
+    }
+
+    return filteredUsers;
+  }
+
 
   /**
    * Section 6: AI Usage Analytics

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, useRef, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -27,6 +27,7 @@ function LoginForm() {
   const { login, isLoading: authLoading } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   const redirect = searchParams.get('redirect') || '/dashboard';
 
@@ -43,6 +44,9 @@ function LoginForm() {
   });
 
   const onSubmit = async (data: LoginForm) => {
+    // Prevent duplicate simultaneous submissions from fast double-clicks or rapid enters
+    if (isSubmittingRef.current || isSubmitting || authLoading) return;
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
     try {
       await login(data.email, data.password);
@@ -58,10 +62,16 @@ function LoginForm() {
       router.refresh();
     } catch (error: any) {
       const errData = error.response?.data;
-      const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Invalid email or password';
-      const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
-      toast.error(message);
+      if (error.response?.status === 429) {
+        const raw429 = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || 'Too many attempts. Please try again later.';
+        toast.error(typeof raw429 === 'string' ? raw429 : JSON.stringify(raw429));
+      } else {
+        const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Invalid email or password';
+        const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
+        toast.error(message);
+      }
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };

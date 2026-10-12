@@ -27,6 +27,7 @@ import { toast } from 'react-hot-toast';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { sendReliableAnalyticsBeacon, openGoogleReviewDestination } from '@/lib/analytics-beacon';
 import { getDefaultTagsForCategory, getCategoryById } from '@/lib/categories';
+import { safeSessionStorage } from '@/lib/storage';
 
 interface BusinessInfo {
   id: string;
@@ -87,18 +88,38 @@ const DEFAULT_EXPERIENCE_TAGS = [
   'Highly Recommended',
 ];
 
+// Safe sessionStorage helpers to prevent SecurityError in Mobile Safari Private Browsing
+const safeGetStorage = (key: string): string | null => safeSessionStorage.getItem(key);
+const safeSetStorage = (key: string, value: string): void => safeSessionStorage.setItem(key, value);
+
 export default function PublicReviewPage() {
   const params = useParams();
   const rawSlug = (params?.slug as string) || '';
   const slug = decodeURIComponent(rawSlug).trim();
   const normalizedSlug = slug.replace(/\s+/g, '-').toLowerCase();
 
-  const [business, setBusiness] = useState<BusinessInfo | null>(null);
+  const [business, setBusiness] = useState<BusinessInfo | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const cached = safeGetStorage(`reviewai_biz_${normalizedSlug}`) || safeGetStorage(`reviewai_biz_${slug}`);
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {}
+    }
+    return null;
+  });
   const [qrCodeId, setQrCodeId] = useState<string | null>(null);
   const [scanLogId, setScanLogId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const cached = safeGetStorage(`reviewai_biz_${normalizedSlug}`) || safeGetStorage(`reviewai_biz_${slug}`);
+    return !cached;
+  });
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isTimeoutError, setIsTimeoutError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   // Review Flow State
   const [language, setLanguage] = useState<string>('en');
@@ -127,11 +148,15 @@ export default function PublicReviewPage() {
   const reviewSectionRef = useRef<HTMLDivElement>(null);
   const feedbackSectionRef = useRef<HTMLDivElement>(null);
 
-  // Fetch public business info (No auth needed, deduplicated via sessionStorage)
+  // Fetch public business info (No auth needed, deduplicated via sessionStorage & AbortController)
   useEffect(() => {
     if (!slug) return;
-    setIsLoading(true);
+    // Only show full spinner if no cached business is already displaying
+    if (!business) {
+      setIsLoading(true);
+    }
     setLoadError(null);
+    setIsTimeoutError(false);
 
     // If slug had spaces or unencoded characters, update the browser address bar cleanly
     if (typeof window !== 'undefined' && rawSlug !== normalizedSlug && window.history?.replaceState) {
@@ -140,44 +165,97 @@ export default function PublicReviewPage() {
       } catch {}
     }
 
-    const cachedScanId = typeof window !== 'undefined'
-      ? sessionStorage.getItem(`reviewai_scan_${normalizedSlug}`) || sessionStorage.getItem(`reviewai_scan_${slug}`)
-      : null;
-    const cachedSessionId = typeof window !== 'undefined'
-      ? sessionStorage.getItem(`reviewai_session_${normalizedSlug}`) || sessionStorage.getItem(`reviewai_session_${slug}`)
-      : null;
+    const cachedScanId = safeGetStorage(`reviewai_scan_${normalizedSlug}`) || safeGetStorage(`reviewai_scan_${slug}`);
+    const cachedSessionId = safeGetStorage(`reviewai_session_${normalizedSlug}`) || safeGetStorage(`reviewai_session_${slug}`);
     if (cachedSessionId) {
       setSessionId(cachedSessionId);
     }
 
+    let isMounted = true;
+    const abortController = new AbortController();
+
     const querySlug = encodeURIComponent(normalizedSlug || slug);
     const queryUrl = cachedScanId ? `/r/${querySlug}?scan_id=${encodeURIComponent(cachedScanId)}` : `/r/${querySlug}`;
 
-    api.get<any>(queryUrl)
+    // 8s watchdog timeout: guarantee loading state NEVER hangs indefinitely
+    const timeoutTimer = setTimeout(() => {
+      if (isMounted) {
+        abortController.abort();
+        setIsTimeoutError(true);
+        setLoadError('Loading took longer than expected. Please check your connection and try again.');
+        setIsLoading(false);
+      }
+    }, 8000);
+
+    api.get<any>(queryUrl, { signal: abortController.signal, timeout: 8000 })
       .then((res: any) => {
+        if (!isMounted) return;
+        clearTimeout(timeoutTimer);
         const b = res?.data?.business || res?.business || res?.data || res;
         if (!b) {
           throw new Error('Business not found');
         }
         setBusiness(b);
+        safeSetStorage(`reviewai_biz_${slug}`, JSON.stringify(b));
+        safeSetStorage(`reviewai_biz_${normalizedSlug}`, JSON.stringify(b));
+
         const qId = res?.data?.qr_code_id || res?.qr_code_id || null;
         const sId = res?.data?.scan_log_id || res?.scan_log_id || null;
         if (qId) setQrCodeId(qId);
         if (sId) {
           setScanLogId(sId);
-          try {
-            sessionStorage.setItem(`reviewai_scan_${slug}`, sId);
-            sessionStorage.setItem(`reviewai_scan_${normalizedSlug}`, sId);
-          } catch {}
+          safeSetStorage(`reviewai_scan_${slug}`, sId);
+          safeSetStorage(`reviewai_scan_${normalizedSlug}`, sId);
         }
       })
       .catch((err: any) => {
-        setLoadError(err.response?.data?.message || 'Business not found or invalid QR link.');
+        if (!isMounted) return;
+        clearTimeout(timeoutTimer);
+
+        if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') {
+          return;
+        }
+
+        const isTimedOut = err?.code === 'ECONNABORTED' || err?.message?.toLowerCase()?.includes('timeout');
+        if (isTimedOut) {
+          setIsTimeoutError(true);
+          setLoadError('Loading took longer than expected. Please check your connection and try again.');
+          return;
+        }
+
+        const isNetworkErr = err?.message === 'Network Error' || !err?.response;
+        if (isNetworkErr) {
+          setIsTimeoutError(true);
+          setLoadError('Network connection issue. Please check your internet connection and try again.');
+          return;
+        }
+
+        const apiMsg = err.response?.data?.error || err.response?.data?.message || err.message || 'Business not found or invalid QR link.';
+        setLoadError(typeof apiMsg === 'string' ? apiMsg : JSON.stringify(apiMsg));
       })
       .finally(() => {
-        setIsLoading(false);
+        if (isMounted) {
+          clearTimeout(timeoutTimer);
+          setIsLoading(false);
+        }
       });
-  }, [slug, rawSlug, normalizedSlug]);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutTimer);
+      abortController.abort();
+    };
+  }, [slug, rawSlug, normalizedSlug, retryCount]);
+
+  const handleRetry = () => {
+    if (isRetrying) return;
+    setIsRetrying(true);
+    setIsLoading(true);
+    setLoadError(null);
+    setIsTimeoutError(false);
+    setRetryCount((prev) => prev + 1);
+    setTimeout(() => setIsRetrying(false), 1000);
+  };
 
   // Helper to start or retrieve session in database (idempotent & cached)
   const ensureSession = async (selectedRating = rating, selectedLang = language): Promise<string | null> => {
@@ -200,10 +278,8 @@ export default function PublicReviewPage() {
       const newSessionId = res?.data?.session_id || res?.session_id || res?.data?.session?.id || null;
       if (newSessionId) {
         setSessionId(newSessionId);
-        try {
-          sessionStorage.setItem(`reviewai_session_${slug}`, newSessionId);
-          sessionStorage.setItem(`reviewai_session_${normalizedSlug}`, newSessionId);
-        } catch {}
+        safeSetStorage(`reviewai_session_${slug}`, newSessionId);
+        safeSetStorage(`reviewai_session_${normalizedSlug}`, newSessionId);
       }
       return newSessionId;
     } catch (e) {
@@ -369,7 +445,7 @@ export default function PublicReviewPage() {
     }
 
     // Record review copied and edited events in backend analytics via non-blocking reliable beacon
-    const activeSessionId = sessionId || (typeof window !== 'undefined' ? sessionStorage.getItem(`reviewai_session_${slug}`) : null);
+    const activeSessionId = sessionId || safeGetStorage(`reviewai_session_${slug}`);
     if (activeSessionId) {
       sendReliableAnalyticsBeacon('/review/sessions/edit', { session_id: activeSessionId, edited_text: reviewText });
       sendReliableAnalyticsBeacon('/review/sessions/copy', { session_id: activeSessionId });
@@ -405,7 +481,7 @@ export default function PublicReviewPage() {
     isRedirectingRef.current = true;
     setIsRedirecting(true);
 
-    const activeSessionId = sessionId || (typeof window !== 'undefined' ? sessionStorage.getItem(`reviewai_session_${slug}`) : null);
+    const activeSessionId = sessionId || safeGetStorage(`reviewai_session_${slug}`);
 
     // 1. Dispatch analytics tracking via keepalive/sendBeacon concurrently without blocking customer navigation
     if (activeSessionId) {
@@ -446,6 +522,15 @@ export default function PublicReviewPage() {
   }
 
   if (loadError || !business) {
+    const isExpired = loadError?.toLowerCase().includes('expired');
+    const isQuotaExhausted = loadError?.toLowerCase().includes('quota') || loadError?.toLowerCase().includes('limit');
+    const isRetryable = isTimeoutError ||
+      loadError?.toLowerCase().includes('connection') ||
+      loadError?.toLowerCase().includes('network') ||
+      loadError?.toLowerCase().includes('try again') ||
+      loadError?.toLowerCase().includes('timeout') ||
+      loadError?.toLowerCase().includes('longer than expected');
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 py-8">
         <Card className="w-full max-w-md shadow-lg text-center">
@@ -453,15 +538,33 @@ export default function PublicReviewPage() {
             <div className="w-14 h-14 bg-red-100 dark:bg-red-950/40 rounded-full flex items-center justify-center mx-auto mb-2">
               <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
             </div>
-            <CardTitle className="text-xl">Business Link Not Found</CardTitle>
+            <CardTitle className="text-xl">
+              {isExpired
+                ? 'Subscription Expired'
+                : isQuotaExhausted
+                ? 'Monthly Scan Limit Reached'
+                : isRetryable
+                ? 'Connection Issue'
+                : 'Business Link Not Found'}
+            </CardTitle>
             <CardDescription className="text-sm">
               {loadError || 'The QR code or review link you scanned is invalid or no longer active.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <p className="text-xs text-slate-500">
-              Please ask the business staff for an updated QR code or visit their official page.
-            </p>
+            {isRetryable ? (
+              <Button
+                onClick={handleRetry}
+                className="w-full flex items-center justify-center gap-2"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Try Again
+              </Button>
+            ) : (
+              <p className="text-xs text-slate-500">
+                Please ask the business staff for an updated QR code or visit their official page.
+              </p>
+            )}
             <Link href="/" className="inline-block w-full">
               <Button variant="outline" className="w-full">
                 Go to Homepage

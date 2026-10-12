@@ -23,8 +23,24 @@ export function createSubscriptionRoutes(
 ): Router {
   const router = Router();
 
-  // All subscription routes require authentication
+  // Plans & pricing catalog is PUBLIC (authoritative admin configuration)
+  router.get('/plans', controller.getPlans);
+
+  // Razorpay Webhooks (public - verified via X-Razorpay-Signature)
+  router.post('/webhook', controller.handleRazorpayWebhook);
+  router.post('/razorpay/webhook', controller.handleRazorpayWebhook);
+
+  // All subsequent subscription routes require authentication
   router.use(authMiddleware.authenticate);
+
+  // Razorpay Order Creation & Verification
+  router.post('/create-order', controller.createRazorpayOrder);
+  router.post('/razorpay/create-order', controller.createRazorpayOrder);
+  router.post('/razorpay/order', controller.createRazorpayOrder);
+  router.post('/verify-payment', controller.verifyRazorpayPayment);
+  router.post('/razorpay/verify-payment', controller.verifyRazorpayPayment);
+  router.post('/razorpay/verify', controller.verifyRazorpayPayment);
+  router.get('/payments/history', controller.getPaymentHistory);
 
   // Status & limits
   router.get('/status', controller.getStatus);

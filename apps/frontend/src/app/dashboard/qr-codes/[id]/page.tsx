@@ -38,8 +38,9 @@ export default function QRCodeDetailPage() {
       });
   }, [id, router]);
 
-  const previewUrl = typeof window !== 'undefined' && qr?.slug
-    ? getQRCodeReviewUrl(qr.slug)
+  const publicSlug = qr?.slug || qr?.business_slug || '';
+  const previewUrl = typeof window !== 'undefined' && publicSlug
+    ? getQRCodeReviewUrl(publicSlug)
     : '';
 
   const handleCopyUrl = async () => {
@@ -206,7 +207,7 @@ export default function QRCodeDetailPage() {
             <CardContent className="space-y-3">
               <div className="flex justify-between py-2 border-b border-border text-sm">
                 <span className="text-secondary-500 dark:text-secondary-400">Slug</span>
-                <span className="font-mono text-secondary-900 dark:text-white font-medium">/r/{qr.slug}</span>
+                <span className="font-mono text-secondary-900 dark:text-white font-medium">/r/{publicSlug || qr.slug}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-2 border-b border-border text-sm gap-2">
                 <span className="text-secondary-500 dark:text-secondary-400">Google Review URL</span>

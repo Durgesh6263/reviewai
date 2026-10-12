@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { api } from '@/lib/api-client';
-import { formatDate, formatNumber, cn } from '@/lib/utils';
+import { formatDate, formatNumber, formatCurrency, cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
 
 interface UpgradeRequest {
@@ -23,11 +23,25 @@ interface UpgradeRequest {
   business_name: string;
   business_slug: string;
   requested_plan: string;
-  requested_plan_name: string;
-  current_plan_name: string;
-  current_plan_slug: string;
+  requested_plan_name?: string;
+  current_plan_name?: string;
+  current_plan_slug?: string;
+  plan_name?: string;
+  plan_version_id?: string;
+  duration_months?: number;
+  price_inr?: number;
+  allocated_qr_quota?: number;
+  allocated_ai_quota?: number;
+  max_qr_codes?: number;
+  current_subscription_status?: string;
+  current_qr_used?: number;
+  current_qr_limit?: number;
+  current_ai_used?: number;
+  current_ai_limit?: number;
+  current_period_end?: string;
   message: string | null;
   status: 'pending' | 'contacted' | 'approved' | 'rejected' | 'canceled';
+  admin_notes?: string | null;
   created_at: string;
   updated_at: string;
   owner_email: string;
@@ -130,9 +144,17 @@ export default function AdminUpgradeRequestsPage() {
     }
   };
 
-  const handleViewDetails = (request: UpgradeRequest) => {
+  const handleViewDetails = async (request: UpgradeRequest) => {
     setSelectedRequest(request);
     setShowDetailDialog(true);
+    try {
+      const response = await api.get<{ data: UpgradeRequest }>(`/admin/upgrade-requests/${request.id}`);
+      if (response && response.data) {
+        setSelectedRequest(response.data);
+      }
+    } catch (e) {
+      // Keep optimistic item if request detail fails
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -272,10 +294,17 @@ export default function AdminUpgradeRequestsPage() {
                           </div>
                         </td>
                         <td className="px-4 py-4">
-                          {getPlanBadge(request.current_plan_slug)}
+                          {getPlanBadge(request.current_plan_slug || 'free')}
                         </td>
                         <td className="px-4 py-4">
-                          {getPlanBadge(request.requested_plan)}
+                          <div>
+                            <span className="font-semibold">{request.plan_name || request.requested_plan}</span>
+                            {request.duration_months && (
+                              <span className="text-xs text-secondary-500 block">
+                                {request.duration_months} Months • {request.price_inr ? formatCurrency(request.price_inr) : ''}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-4">
                           {getStatusBadge(request.status)}
@@ -287,43 +316,55 @@ export default function AdminUpgradeRequestsPage() {
                           {request.updated_at !== request.created_at ? formatDate(request.updated_at) : '—'}
                         </td>
                         <td className="px-4 py-4 text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8" disabled={updatingId === request.id}>
-                                <MoreVertical className="h-4 w-4" />
+                          <div className="flex items-center justify-end gap-1.5">
+                            {request.status === 'pending' && (
+                              <Button
+                                size="sm"
+                                className="bg-green-600 hover:bg-green-700 text-white h-8 text-xs font-semibold px-2.5"
+                                disabled={updatingId === request.id}
+                                onClick={() => handleStatusChange(request.id, 'approved')}
+                              >
+                                {updatingId === request.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Activate'}
                               </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-64">
-                              <DropdownMenuItem onClick={() => handleViewDetails(request)} className="flex items-center gap-2">
-                                <Eye className="h-4 w-4" /> View Details
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              {VALID_STATUSES.map((status) => (
-                                request.status !== status && (
-                                  <DropdownMenuItem
-                                    key={status}
-                                    onClick={() => {
-                                      if (status === 'approved' || status === 'rejected') {
-                                        const note = prompt(`Add an internal note for ${STATUS_LABELS[status]} (optional):`);
-                                        handleStatusChange(request.id, status, note || undefined);
-                                      } else {
-                                        handleStatusChange(request.id, status);
-                                      }
-                                    }}
-                                    disabled={updatingId === request.id}
-                                    className={cn('flex items-center gap-2', status === 'approved' && 'text-green-600', status === 'rejected' && 'text-red-600')}
-                                  >
-                                    {status === 'approved' && <CheckCircle className="h-4 w-4" />}
-                                    {status === 'rejected' && <XCircle className="h-4 w-4" />}
-                                    {status === 'contacted' && <MessageSquare className="h-4 w-4" />}
-                                    {status === 'pending' && <Clock className="h-4 w-4" />}
-                                    {status === 'canceled' && <X className="h-4 w-4" />}
-                                    {STATUS_LABELS[status]}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                            )}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8" disabled={updatingId === request.id}>
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-64">
+                                <DropdownMenuItem onClick={() => handleViewDetails(request)} className="flex items-center gap-2">
+                                  <Eye className="h-4 w-4" /> View Details
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                {VALID_STATUSES.map((status) => (
+                                  request.status !== status && (
+                                    <DropdownMenuItem
+                                      key={status}
+                                      onClick={() => {
+                                        if (status === 'approved' || status === 'rejected') {
+                                          const note = prompt(`Add an internal note for ${STATUS_LABELS[status]} (optional):`);
+                                          handleStatusChange(request.id, status, note || undefined);
+                                        } else {
+                                          handleStatusChange(request.id, status);
+                                        }
+                                      }}
+                                      disabled={updatingId === request.id}
+                                      className={cn('flex items-center gap-2', status === 'approved' && 'text-green-600', status === 'rejected' && 'text-red-600')}
+                                    >
+                                      {status === 'approved' && <CheckCircle className="h-4 w-4" />}
+                                      {status === 'rejected' && <XCircle className="h-4 w-4" />}
+                                      {status === 'contacted' && <MessageSquare className="h-4 w-4" />}
+                                      {status === 'pending' && <Clock className="h-4 w-4" />}
+                                      {status === 'canceled' && <X className="h-4 w-4" />}
+                                      {STATUS_LABELS[status]}
+                                    </DropdownMenuItem>
+                                  ))
+                                )}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -370,7 +411,7 @@ export default function AdminUpgradeRequestsPage() {
           {selectedRequest && (
             <div className="space-y-6">
               <DialogHeader>
-                <DialogTitle>Upgrade Request Details</DialogTitle>
+                <DialogTitle>Activation Request Details</DialogTitle>
                 <DialogDescription>
                   Business: {selectedRequest.business_name} • Request ID: {selectedRequest.id.slice(0, 8)}...
                 </DialogDescription>
@@ -384,15 +425,45 @@ export default function AdminUpgradeRequestsPage() {
                 <DetailField label="Owner Name" value={selectedRequest.owner_name} />
                 <DetailField label="Owner Email" value={selectedRequest.owner_email} />
                 <DetailField label="Current Plan" value={
-                  <span>{getPlanBadge(selectedRequest.current_plan_slug)}</span>
+                  <span>{getPlanBadge(selectedRequest.current_plan_slug || 'free')}</span>
+                } />
+                <DetailField label="Current Subscription Status" value={
+                  <span className="font-semibold capitalize text-secondary-800 dark:text-secondary-200">
+                    {selectedRequest.current_subscription_status || 'Trial / Free'}
+                  </span>
+                } />
+                <DetailField label="Current QR Usage" value={
+                  <span className="font-medium">
+                    {formatNumber(selectedRequest.current_qr_used ?? 0)} / {selectedRequest.current_qr_limit === -1 ? 'Unlimited' : formatNumber(selectedRequest.current_qr_limit ?? 0)} Scans
+                  </span>
+                } />
+                <DetailField label="Current AI Usage" value={
+                  <span className="font-medium">
+                    {formatNumber(selectedRequest.current_ai_used ?? 0)} / {selectedRequest.current_ai_limit === -1 ? 'Unlimited' : formatNumber(selectedRequest.current_ai_limit ?? 0)} Generations
+                  </span>
                 } />
                 <DetailField label="Requested Plan" value={
-                  <span>{getPlanBadge(selectedRequest.requested_plan)}</span>
+                  <span className="font-bold">{selectedRequest.plan_name || selectedRequest.requested_plan} ({selectedRequest.plan_version_id || 'v1.0'})</span>
+                } />
+                <DetailField label="Duration" value={
+                  <span>{selectedRequest.duration_months ? `${selectedRequest.duration_months} Months Fixed` : '—'}</span>
+                } />
+                <DetailField label="Price Captured" value={
+                  <span className="font-extrabold text-primary-600">{selectedRequest.price_inr ? formatCurrency(selectedRequest.price_inr) : '—'}</span>
+                } />
+                <DetailField label="Plan QR Quota" value={
+                  <span>{selectedRequest.allocated_qr_quota !== undefined ? (selectedRequest.allocated_qr_quota === -1 ? 'Unlimited' : `${formatNumber(selectedRequest.allocated_qr_quota)} (Non-resetting)`) : '—'}</span>
+                } />
+                <DetailField label="Plan AI Quota" value={
+                  <span>{selectedRequest.allocated_ai_quota !== undefined ? (selectedRequest.allocated_ai_quota === -1 ? 'Unlimited' : `${formatNumber(selectedRequest.allocated_ai_quota)} (Non-resetting)`) : '—'}</span>
+                } />
+                <DetailField label="Max QR Codes" value={
+                  <span>{selectedRequest.max_qr_codes ?? '—'}</span>
                 } />
                 <DetailField label="Status" value={
                   <span>{getStatusBadge(selectedRequest.status)}</span>
                 } />
-                <DetailField label="Requested" value={formatDate(selectedRequest.created_at)} />
+                <DetailField label="Requested Date" value={formatDate(selectedRequest.created_at)} />
                 <DetailField label="Last Updated" value={
                   selectedRequest.updated_at !== selectedRequest.created_at
                     ? formatDate(selectedRequest.updated_at)

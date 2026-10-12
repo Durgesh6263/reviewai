@@ -23,6 +23,8 @@ yarn-debug.log*
 pnpm-debug.log*
 *.log
 error.log
+.temp/
+**/.temp/
 
 # Scratch & testing scripts
 scratch/

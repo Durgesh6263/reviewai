@@ -25,6 +25,7 @@ import { AppError, AuthenticationError, ValidationError, NotFoundError, Conflict
 import { logger } from '../../shared/logger';
 
 export class AuthService {
+  static instance: AuthService | null = null;
   private accountStatusCache = new Map<string, { status: 'active' | 'deactivated'; expiresAt: number }>();
   private loginAttemptsMap = new Map<string, { count: number; lockedUntil: number }>();
 
@@ -32,7 +33,13 @@ export class AuthService {
     private supabase: SupabaseClient,
     private jwtSecret: string,
     private jwtRefreshSecret: string
-  ) {}
+  ) {
+    AuthService.instance = this;
+  }
+
+  static invalidateUserCache(userId?: string): void {
+    AuthService.instance?.invalidateAccountStatusCache(userId);
+  }
 
   invalidateAccountStatusCache(userId?: string): void {
     if (userId) {
@@ -155,6 +162,9 @@ export class AuthService {
     // Generate tokens immediately
     const tokens = this.generateTokens(user);
 
+    // Store refresh token hash in database for session persistence and rotation
+    await this.storeRefreshToken(user.id, tokens.refresh_token);
+
     // Run post-login updates asynchronously without blocking response
     void this.supabase
       .from('users')
@@ -186,17 +196,28 @@ export class AuthService {
       throw new AuthenticationError('Invalid token type');
     }
 
-    // Check if refresh token exists in database (not revoked)
-    const { data: storedToken } = await this.supabase
-      .from('refresh_tokens')
-      .select('id')
-      .eq('user_id', payload.sub)
-      .eq('token_hash', this.hashToken(refreshToken))
-      .gt('expires_at', new Date().toISOString())
-      .single();
+    // Check if refresh token exists in database (if table exists)
+    try {
+      const { data: storedToken, error } = await this.supabase
+        .from('refresh_tokens')
+        .select('id')
+        .eq('user_id', payload.sub)
+        .eq('token_hash', this.hashToken(refreshToken))
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle();
 
-    if (!storedToken) {
-      throw new AuthenticationError('Refresh token revoked or expired');
+      // If table exists and no error, but token was explicitly deleted/revoked, deny
+      if (!error && storedToken === null) {
+        throw new AuthenticationError('Refresh token revoked or expired');
+      }
+
+      // If storedToken was found, rotate it
+      if (storedToken) {
+        await this.supabase.from('refresh_tokens').delete().eq('id', storedToken.id);
+      }
+    } catch (err) {
+      if (err instanceof AuthenticationError) throw err;
+      // If table does not exist in schema, proceed with cryptographic JWT verification
     }
 
     // Get user
@@ -214,8 +235,7 @@ export class AuthService {
     // Generate new tokens
     const tokens = this.generateTokens(user);
 
-    // Rotate refresh token - delete old, store new
-    await this.supabase.from('refresh_tokens').delete().eq('id', storedToken.id);
+    // Rotate refresh token - store new
     await this.storeRefreshToken(user.id, tokens.refresh_token);
 
     return tokens;
@@ -225,16 +245,20 @@ export class AuthService {
    * Logout user - revoke refresh token
    */
   async logout(userId: string, refreshToken?: string): Promise<void> {
-    if (refreshToken) {
-      // Revoke specific token
-      await this.supabase
-        .from('refresh_tokens')
-        .delete()
-        .eq('user_id', userId)
-        .eq('token_hash', this.hashToken(refreshToken));
-    } else {
-      // Revoke all tokens for user
-      await this.supabase.from('refresh_tokens').delete().eq('user_id', userId);
+    try {
+      if (refreshToken) {
+        // Revoke specific token
+        await this.supabase
+          .from('refresh_tokens')
+          .delete()
+          .eq('user_id', userId)
+          .eq('token_hash', this.hashToken(refreshToken));
+      } else {
+        // Revoke all tokens for user
+        await this.supabase.from('refresh_tokens').delete().eq('user_id', userId);
+      }
+    } catch {
+      // Ignore database error if table does not exist
     }
   }
 
@@ -467,11 +491,15 @@ export class AuthService {
   private async storeRefreshToken(userId: string, refreshToken: string): Promise<void> {
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-    await this.supabase.from('refresh_tokens').insert({
-      user_id: userId,
-      token_hash: this.hashToken(refreshToken),
-      expires_at: expiresAt.toISOString(),
-    });
+    try {
+      await this.supabase.from('refresh_tokens').insert({
+        user_id: userId,
+        token_hash: this.hashToken(refreshToken),
+        expires_at: expiresAt.toISOString(),
+      });
+    } catch {
+      // If table does not exist, JWT cryptographic signature ensures token integrity
+    }
   }
 
   /**

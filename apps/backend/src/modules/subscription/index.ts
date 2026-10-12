@@ -9,3 +9,4 @@ export * from './validators';
 export { SubscriptionService } from './service';
 export { SubscriptionController } from './controller';
 export { createSubscriptionRoutes, SUBSCRIPTION_ROUTES_DOCS } from './routes';
+export * from './entitlement';

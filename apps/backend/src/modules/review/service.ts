@@ -19,6 +19,7 @@ import {
 import { AppError, NotFoundError, ValidationError, ConflictError } from '../../shared/exceptions';
 import { AIProviderFactory } from './ai/factory';
 import { getCategoryById } from '../business/categories';
+import { entitlementService, normalizeBlockReason } from '../subscription/entitlement';
 
 export class ReviewService {
   private fallbackSessions = new Map<string, ReviewSession>();
@@ -88,6 +89,20 @@ export class ReviewService {
     return session;
   }
 
+  private async validateSessionEntitlement(session: ReviewSession): Promise<void> {
+    if (session.business_id && session.business_id !== 'guest-business' && session.business_id !== 'test-business') {
+      const entitlement = await entitlementService.getBusinessEntitlement(session.business_id);
+      if (entitlement.is_expired || entitlement.status === 'expired' || entitlement.status === 'canceled' || entitlement.status === 'suspended') {
+        const reason = entitlement.is_trial ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_EXPIRED';
+        throw new AppError(
+          entitlementService.getReasonMessage(reason),
+          403,
+          reason
+        );
+      }
+    }
+  }
+
   /**
    * Create and persist a new review session in review_sessions table
    */
@@ -99,10 +114,56 @@ export class ReviewService {
     rating?: number;
     metadata?: Record<string, any>;
   }): Promise<ReviewSession> {
+    // If business_id is missing but qr_code_id is provided, resolve business_id to prevent entitlement bypass
+    if (!data.business_id && data.qr_code_id && data.qr_code_id !== 'test-qr-code') {
+      try {
+        const { data: qr } = await this.supabase
+          .from('qr_codes')
+          .select('business_id')
+          .eq('id', data.qr_code_id)
+          .maybeSingle();
+        if (qr?.business_id) {
+          data.business_id = qr.business_id;
+        }
+      } catch {}
+    }
+
+    // Authoritative Entitlement Check: Verify subscription or trial is currently entitled to QR service
+    if (data.business_id && data.business_id !== 'guest-business' && data.business_id !== 'test-business') {
+      const entitlementCheck = await entitlementService.canUseService(data.business_id, 'qr_scan');
+      if (!entitlementCheck.allowed) {
+        const reason = normalizeBlockReason(entitlementCheck.reason);
+        throw new AppError(
+          entitlementCheck.message || entitlementService.getReasonMessage(reason),
+          403,
+          reason
+        );
+      }
+    }
+
+    // Ensure scan_log_id exists to satisfy database NOT NULL constraint
+    let resolvedScanLogId = data.scan_log_id;
+    if (!resolvedScanLogId && data.qr_code_id && data.business_id && data.qr_code_id !== 'test-qr-code') {
+      try {
+        const { data: scanLog } = await this.supabase
+          .from('scan_logs')
+          .insert({
+            business_id: data.business_id,
+            qr_code_id: data.qr_code_id,
+            scanned_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single();
+        if (scanLog?.id) {
+          resolvedScanLogId = scanLog.id;
+        }
+      } catch {}
+    }
+
     const sessionData: any = {
       qr_code_id: data.qr_code_id,
       business_id: data.business_id,
-      scan_log_id: data.scan_log_id || undefined,
+      scan_log_id: resolvedScanLogId || undefined,
       language: data.language || 'en',
       rating: Math.max(1, Math.min(5, Number(data.rating) || 5)),
       status: 'started',
@@ -530,6 +591,7 @@ export class ReviewService {
    */
   async getSessionWithReview(sessionId: string): Promise<ReviewSessionResponse> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     let review: GeneratedReview | null = this.fallbackReviews.get(sessionId) || null;
     if (!review) {
@@ -585,6 +647,7 @@ export class ReviewService {
    */
   async selectLanguage(sessionId: string, language: string): Promise<ReviewSession> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     if (session.status === 'abandoned') {
       throw new ValidationError('Cannot update an abandoned review session');
@@ -627,6 +690,7 @@ export class ReviewService {
    */
   async selectRating(sessionId: string, rating: number): Promise<ReviewSession> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     if (session.status === 'abandoned') {
       throw new ValidationError('Cannot update an abandoned review session');
@@ -666,6 +730,7 @@ export class ReviewService {
    */
   async selectTags(sessionId: string, tags: string[]): Promise<ReviewSession> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
     session.metadata = {
       ...(session.metadata || {}),
       tags,
@@ -691,6 +756,7 @@ export class ReviewService {
    */
   async recordCopy(sessionId: string): Promise<{ success: boolean; copy_count: number }> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     // Idempotency: debounce rapid duplicate clicks or multiple transport triggers (keepalive + sendBeacon)
     // within 3 seconds for the same session.
@@ -729,6 +795,7 @@ export class ReviewService {
    */
   async recordFeedbackStart(sessionId: string): Promise<{ success: boolean }> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
     if (!session.metadata?.feedback_started_at) {
       session.metadata = {
         ...(session.metadata || {}),
@@ -753,6 +820,7 @@ export class ReviewService {
    */
   async recordFeedbackSkip(sessionId: string): Promise<{ success: boolean }> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
     session.metadata = {
       ...(session.metadata || {}),
       feedback_skipped_at: new Date().toISOString(),
@@ -808,13 +876,31 @@ export class ReviewService {
       }
     }
 
-    const generationPromise = this.executeWithBusinessLock(session.business_id, async () => {
+    const targetBusinessId = (session.business_id && session.business_id !== 'guest-business' && session.business_id !== 'test-business')
+      ? session.business_id
+      : (data.business_id && data.business_id !== 'guest-business' && data.business_id !== 'test-business' ? data.business_id : null);
+
+    const generationPromise = this.executeWithBusinessLock(targetBusinessId || session.business_id, async () => {
+      let quotaConsumed = false;
       // Enforce subscription usage limit inside the business lock to prevent concurrent bypass
-      if (session.business_id && session.business_id !== 'guest-business') {
-        await this.checkReviewGenerationLimit(session.business_id);
+      if (targetBusinessId) {
+        session.business_id = targetBusinessId;
+        await this.checkReviewGenerationLimit(targetBusinessId);
+
+        const consumeRes = await entitlementService.consumeServiceQuota(targetBusinessId, 'ai_generation', 1);
+        if (!consumeRes.allowed || !consumeRes.success) {
+          const reason = normalizeBlockReason(consumeRes.reason || 'AI_QUOTA_EXHAUSTED');
+          throw new AppError(
+            entitlementService.getReasonMessage(reason),
+            403,
+            reason
+          );
+        }
+        quotaConsumed = true;
       }
 
-      // Check simulated error if requested in tests
+      try {
+        // Check simulated error if requested in tests
       if (data.simulatedError) {
         if (data.simulatedError === 'timeout') {
           throw new AppError('AI provider request timed out. Please try again.', 504, 'AI_TIMEOUT');
@@ -1034,16 +1120,26 @@ export class ReviewService {
         }
       }
 
-      // Only count genuine successful generation towards subscription usage
-      if (session.business_id && session.business_id !== 'guest-business') {
-        try {
-          await this.trackUsage(session.business_id, 'review_generations');
-        } catch (trackErr) {
-          console.warn('Failed to track usage for review generation:', trackErr);
+        // Only record legacy usage log on genuine successful generation
+        if (session.business_id && session.business_id !== 'guest-business') {
+          try {
+            await this.trackUsage(session.business_id, 'review_generations');
+          } catch (trackErr) {
+            console.warn('Failed to track usage for review generation:', trackErr);
+          }
         }
-      }
 
-      return review;
+        return review;
+      } catch (err) {
+        if (quotaConsumed && targetBusinessId) {
+          try {
+            await entitlementService.refundServiceQuota(targetBusinessId, 'ai_generation', 1);
+          } catch (refundErr) {
+            console.error('Failed to refund AI quota:', refundErr);
+          }
+        }
+        throw err;
+      }
     });
 
     this.inFlightGenerations.set(inFlightKey, generationPromise);
@@ -1059,6 +1155,7 @@ export class ReviewService {
    */
   async updateReview(sessionId: string, data: UpdateReviewRequest): Promise<GeneratedReview> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     if (session.status === 'abandoned') {
       throw new ValidationError('Cannot edit review for an abandoned session');
@@ -1109,6 +1206,7 @@ export class ReviewService {
    */
   async regenerateReview(sessionId: string): Promise<GeneratedReview> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     if (session.status === 'abandoned') {
       throw new ValidationError('Cannot regenerate review for an abandoned session');
@@ -1121,12 +1219,25 @@ export class ReviewService {
     }
 
     return this.executeWithBusinessLock(session.business_id, async () => {
+      let quotaConsumed = false;
       // Enforce subscription usage limit inside the lock
       if (session.business_id && session.business_id !== 'guest-business') {
         await this.checkReviewGenerationLimit(session.business_id);
+
+        const consumeRes = await entitlementService.consumeServiceQuota(session.business_id, 'ai_generation', 1);
+        if (!consumeRes.allowed || !consumeRes.success) {
+          const reason = normalizeBlockReason(consumeRes.reason || 'AI_QUOTA_EXHAUSTED');
+          throw new AppError(
+            entitlementService.getReasonMessage(reason),
+            403,
+            reason
+          );
+        }
+        quotaConsumed = true;
       }
 
-      const existing = this.fallbackReviews.get(sessionId) || await this.findGeneratedReview(sessionId);
+      try {
+        const existing = this.fallbackReviews.get(sessionId) || await this.findGeneratedReview(sessionId);
       const nextVariation = (existing?.regeneration_count || 0) + 1;
       if (nextVariation > 5) {
         throw new AppError('Maximum review regenerations reached for this session (5 max).', 429, 'MAX_REGENERATIONS_EXCEEDED');
@@ -1305,16 +1416,26 @@ export class ReviewService {
         } catch {}
       }
 
-      // Track usage only on successful regeneration
-      if (session.business_id && session.business_id !== 'guest-business') {
-        try {
-          await this.trackUsage(session.business_id, 'review_generations');
-        } catch (trackErr) {
-          console.warn('Failed to track usage for review regeneration:', trackErr);
+        // Track legacy usage log on successful regeneration
+        if (session.business_id && session.business_id !== 'guest-business') {
+          try {
+            await this.trackUsage(session.business_id, 'review_generations');
+          } catch (trackErr) {
+            console.warn('Failed to track usage for review regeneration:', trackErr);
+          }
         }
-      }
 
-      return review;
+        return review;
+      } catch (err) {
+        if (quotaConsumed && session.business_id && session.business_id !== 'guest-business') {
+          try {
+            await entitlementService.refundServiceQuota(session.business_id, 'ai_generation', 1);
+          } catch (refundErr) {
+            console.error('Failed to refund AI quota:', refundErr);
+          }
+        }
+        throw err;
+      }
     });
   }
 
@@ -1323,6 +1444,7 @@ export class ReviewService {
    */
   async completeReview(sessionId: string): Promise<{ redirect_url: string }> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     // Resolve target redirect URL
     let redirectUrl = 'https://search.google.com/local/writereview';
@@ -1441,6 +1563,7 @@ export class ReviewService {
     }
 
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
 
     // Idempotency: debounce rapid duplicate clicks or multiple submissions within 10s
     const isDuplicate = session.status === 'private_feedback_submitted' &&
@@ -1552,6 +1675,7 @@ export class ReviewService {
    */
   async getFlowStep(sessionId: string): Promise<ReviewFlowStep> {
     const session = await this.getSession(sessionId);
+    await this.validateSessionEntitlement(session);
     let review: GeneratedReview | undefined;
 
     if (['review_generated', 'review_edited', 'redirected'].includes(session.status)) {
@@ -1594,103 +1718,19 @@ export class ReviewService {
   }
 
   /**
-   * Check review generation limit for business
+   * Check review generation limit for business using Central Entitlement Service
+   * Enforces multi-condition expiry (time, QR quota, AI quota) with NO monthly reset
    */
   private async checkReviewGenerationLimit(businessId: string): Promise<void> {
-    // Get subscription for this business
-    const { data: subscription } = await this.supabase
-      .from('subscriptions')
-      .select('id, plan, status, current_period_start, current_period_end')
-      .eq('business_id', businessId)
-      .single();
-
-    // If no subscription, use free plan limits
-    if (!subscription) {
-      // Check generated_reviews count for current period (last 30 days)
-      const periodStart = new Date();
-      periodStart.setDate(periodStart.getDate() - 30);
-      periodStart.setHours(0, 0, 0, 0);
-
-      const { count: reviewCount } = await this.supabase
-        .from('generated_reviews')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId)
-        .gte('created_at', periodStart.toISOString());
-
-      const freeLimit = 50; // From SUBSCRIPTION_CONSTANTS.PLANS.free.limits.review_generations
-      if ((reviewCount || 0) >= freeLimit) {
-        throw new AppError(
-          'AI review generation limit exceeded for Free plan. Please upgrade to continue.',
-          403,
-          'REVIEW_GENERATION_LIMIT_EXCEEDED'
-        );
-      }
-      return;
-    }
-
-    // If subscription is not active, check if it's expired/canceled
-    if (!['active', 'trialing'].includes(subscription.status)) {
-      // For expired/canceled, fallback to free plan limits
-      const periodStart = new Date(subscription.current_period_end);
-      periodStart.setDate(periodStart.getDate() - 30);
-
-      const { count: reviewCount } = await this.supabase
-        .from('generated_reviews')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId)
-        .gte('created_at', periodStart.toISOString());
-
-      const freeLimit = 50;
-      if ((reviewCount || 0) >= freeLimit) {
-        throw new AppError(
-          'AI review generation limit exceeded. Your subscription has expired. Please renew or upgrade.',
-          403,
-          'REVIEW_GENERATION_LIMIT_EXCEEDED'
-        );
-      }
-      return;
-    }
-
-    // Check current period usage from usage_logs
-    const { data: usageRecords } = await this.supabase
-      .from('usage_logs')
-      .select('count')
-      .eq('subscription_id', subscription.id)
-      .eq('metric', 'review_generations')
-      .eq('period_start', subscription.current_period_start)
-      .eq('period_end', subscription.current_period_end);
-
-    const used = usageRecords?.reduce((sum, r) => sum + r.count, 0) || 0;
-
-    // Get plan limits
-    const { data: planConfig } = await this.supabase
-      .from('plan_configs')
-      .select('max_review_generations')
-      .eq('plan', subscription.plan)
-      .single();
-
-    const limit = planConfig?.max_review_generations || this.getPlanReviewLimit(subscription.plan);
-
-    if (limit !== null && used >= limit) {
+    const check = await entitlementService.canUseService(businessId, 'ai_generation');
+    if (!check.allowed) {
+      const reason = normalizeBlockReason(check.reason);
       throw new AppError(
-        `AI review generation limit (${limit}) exceeded for ${subscription.plan} plan. Please upgrade.`,
+        check.message || entitlementService.getReasonMessage(reason),
         403,
-        'REVIEW_GENERATION_LIMIT_EXCEEDED'
+        reason
       );
     }
-  }
-
-  /**
-   * Get plan review generation limit from centralized config
-   */
-  private getPlanReviewLimit(plan: string): number | null {
-    const limits: Record<string, number | null> = {
-      free: 50,
-      starter: 500,
-      professional: 2000,
-      enterprise: null, // unlimited
-    };
-    return limits[plan] ?? 50;
   }
 
   /**
@@ -1711,20 +1751,24 @@ export class ReviewService {
    * Track usage for billing
    */
   private async trackUsage(businessId: string, metric: string): Promise<void> {
-    // Get active subscription
-    const { data: subscription } = await this.supabase
-      .from('subscriptions')
-      .select('id, current_period_start, current_period_end')
-      .eq('business_id', businessId)
-      .in('status', ['active', 'trialing'])
-      .single();
+    // Record into legacy usage_logs for reporting compatibility if active subscription exists
+    try {
+      const { data: subscription } = await this.supabase
+        .from('subscriptions')
+        .select('id')
+        .eq('business_id', businessId)
+        .in('status', ['active', 'trialing'])
+        .maybeSingle();
 
-    if (subscription) {
-      await this.supabase.rpc('track_usage', {
-        p_subscription_id: subscription.id,
-        p_metric: metric,
-        p_count: 1,
-      });
+      if (subscription) {
+        await this.supabase.rpc('track_usage', {
+          p_subscription_id: subscription.id,
+          p_metric: metric,
+          p_count: 1,
+        });
+      }
+    } catch {
+      // Legacy reporting fallback
     }
   }
 }

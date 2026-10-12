@@ -67,9 +67,21 @@ interface SubscriptionStatus {
   plan: {
     name: string;
     slug: string;
+    duration?: string;
+    duration_months?: number;
+    price_inr?: number;
     monthly_qr_scans: number;
     monthly_ai_generations: number;
   };
+  status?: string;
+  display_status?: string;
+  raw_status?: string;
+  start_date?: string;
+  end_date?: string;
+  expiry_date?: string;
+  price_paid?: number;
+  duration?: string;
+  duration_months?: number;
   qr_scans: {
     limit: number;
     used: number;
@@ -82,7 +94,12 @@ interface SubscriptionStatus {
     remaining: number;
     percentage: number;
   };
+  days_remaining?: number;
   is_active: boolean;
+  is_blocked?: boolean;
+  exhaustion_reason?: string | null;
+  exhaustion_message?: string | null;
+  block_message?: string | null;
   current_period_end?: string;
 }
 
@@ -190,6 +207,10 @@ export default function DashboardOverviewPage() {
         const list = res?.data?.businesses || res?.data || res?.businesses || [];
         if (Array.isArray(list)) {
           setBusinesses(list.map((b: any) => ({ id: b.id, name: b.name })));
+          const storedBizId = typeof window !== 'undefined' ? localStorage.getItem('reviewai_active_business_id') : null;
+          if (storedBizId && list.some((b: any) => b.id === storedBizId)) {
+            setSelectedBusinessId(storedBizId);
+          }
         }
       })
       .catch((err: any) => {
@@ -427,7 +448,18 @@ export default function DashboardOverviewPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {businesses.length > 0 && (
-            <Select value={selectedBusinessId} onValueChange={setSelectedBusinessId}>
+            <Select
+              value={selectedBusinessId}
+              onValueChange={(val) => {
+                setSelectedBusinessId(val);
+                if (typeof window !== 'undefined') {
+                  if (val !== 'all') {
+                    localStorage.setItem('reviewai_active_business_id', val);
+                  }
+                  window.dispatchEvent(new CustomEvent('reviewai_business_changed', { detail: { business_id: val !== 'all' ? val : null } }));
+                }
+              }}
+            >
               <SelectTrigger className="w-[180px]">
                 <Building2 className="h-4 w-4 mr-2 text-secondary-500 shrink-0" />
                 <SelectValue placeholder="All Businesses" />
@@ -606,77 +638,175 @@ export default function DashboardOverviewPage() {
       </Card>
 
       {/* Subscription & Usage */}
-      {subscription && (
-        <Card className="border-primary-200 dark:border-primary-800">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="text-primary-600 dark:text-primary-400">★</span>
-              Current Plan: {subscription.plan.name}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* QR Scans Usage */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-secondary-700 dark:text-secondary-300">QR Scans</span>
-                  <span className="text-sm text-secondary-500 dark:text-secondary-400">
-                    {subscription.qr_scans.limit === -1 ? 'Unlimited' : `${subscription.qr_scans.used} / ${subscription.qr_scans.limit}`}
-                  </span>
+      {subscription && (() => {
+        const statusStr = (subscription.display_status || subscription.status || (subscription.is_active ? 'ACTIVE' : 'EXPIRED')).toUpperCase();
+        const getStatusBadge = () => {
+          if (statusStr === 'ACTIVE') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800 dark:bg-green-900/60 dark:text-green-200">ACTIVE</span>;
+          if (statusStr === 'FREE_TRIAL') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200">FREE_TRIAL</span>;
+          if (statusStr === 'QR_QUOTA_EXHAUSTED') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200">QR_QUOTA_EXHAUSTED</span>;
+          if (statusStr === 'AI_QUOTA_EXHAUSTED') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200">AI_QUOTA_EXHAUSTED</span>;
+          if (statusStr === 'EXPIRED') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200">EXPIRED</span>;
+          if (statusStr === 'CANCELED') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 dark:bg-slate-900/60 dark:text-slate-200">CANCELED</span>;
+          if (statusStr === 'SUSPENDED') return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-200 text-red-900 dark:bg-red-900 dark:text-red-100">SUSPENDED</span>;
+          return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800">{statusStr}</span>;
+        };
+
+        const getExhaustionMessage = () => {
+          if (subscription.is_active && !subscription.is_blocked) {
+            const qrExhausted = subscription.qr_scans.limit !== -1 && subscription.qr_scans.remaining <= 0;
+            const aiExhausted = subscription.ai_generations.limit !== -1 && subscription.ai_generations.remaining <= 0;
+            if (qrExhausted && aiExhausted) {
+              return 'Monthly QR scan and AI generation quotas exhausted. Access will resume automatically in the next monthly period.';
+            }
+            if (qrExhausted) {
+              return 'Monthly QR scan quota exhausted only. AI generation remains available.';
+            }
+            if (aiExhausted) {
+              return 'Monthly AI generation quota exhausted only. QR scan reviews remain available.';
+            }
+            return null;
+          }
+          if (
+            subscription.exhaustion_reason === 'QR_QUOTA_EXHAUSTED' ||
+            subscription.exhaustion_reason === 'PLAN_QR_QUOTA_EXHAUSTED' ||
+            subscription.exhaustion_reason === 'TRIAL_QR_QUOTA_EXHAUSTED'
+          ) {
+            return 'Your QR scan quota has been exhausted.';
+          }
+          if (
+            subscription.exhaustion_reason === 'AI_QUOTA_EXHAUSTED' ||
+            subscription.exhaustion_reason === 'PLAN_AI_QUOTA_EXHAUSTED' ||
+            subscription.exhaustion_reason === 'TRIAL_AI_QUOTA_EXHAUSTED'
+          ) {
+            return 'Your AI generation quota has been exhausted.';
+          }
+          return 'Your subscription has expired.';
+        };
+
+        const exhaustionMessage = getExhaustionMessage();
+
+        return (
+          <Card className={cn(
+            'transition-colors',
+            !subscription.is_active || subscription.is_blocked
+              ? 'border-red-300 dark:border-red-900 bg-red-50/20 dark:bg-red-950/20'
+              : 'border-primary-200 dark:border-primary-800'
+          )}>
+            <CardHeader>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <span className="text-primary-600 dark:text-primary-400">★</span>
+                  Current Plan: {subscription.plan.name} {subscription.plan.duration ? `(${subscription.plan.duration})` : ''}
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  {getStatusBadge()}
                 </div>
-                <div className="h-2 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 transition-all duration-300"
-                    style={{ width: `${subscription.qr_scans.percentage}%` }}
-                  />
+              </div>
+              {exhaustionMessage && (
+                <p className={cn(
+                  "text-xs font-medium mt-1",
+                  subscription.is_active ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400"
+                )}>
+                  {exhaustionMessage} {!subscription.is_active && 'Choose a plan below to restore access.'}
+                </p>
+              )}
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* QR Scans Usage */}
+                <div className="p-3 rounded-xl bg-secondary-50/60 dark:bg-secondary-800/30 border border-secondary-100 dark:border-secondary-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-secondary-700 dark:text-secondary-300 flex items-center gap-1.5">
+                      <QrCode className="h-4 w-4 text-blue-500" />
+                      QR Scans
+                    </span>
+                    <span className="text-sm font-semibold text-secondary-900 dark:text-white">
+                      {subscription.qr_scans.limit === -1 ? 'Unlimited' : `${subscription.qr_scans.used} / ${subscription.qr_scans.limit}`}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
+                    <div
+                      className={cn(
+                        'h-full transition-all duration-300',
+                        subscription.qr_scans.percentage >= 100 ? 'bg-red-500' : 'bg-blue-500'
+                      )}
+                      style={{ width: `${subscription.qr_scans.percentage}%` }}
+                    />
+                  </div>
+                  <div className="text-xs text-secondary-500 font-mono mt-1">
+                    {subscription.qr_scans.limit === -1 
+                      ? 'Unlimited remaining' 
+                      : `QR: ${formatNumber(subscription.qr_scans.limit)} total | ${formatNumber(subscription.qr_scans.used)} used | ${formatNumber(subscription.qr_scans.remaining)} remaining`}
+                  </div>
                 </div>
-                {subscription.qr_scans.limit !== -1 && subscription.qr_scans.percentage >= 80 && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    {subscription.qr_scans.percentage >= 100 ? 'Limit reached' : 'Approaching limit'}
-                  </p>
-                )}
+
+                {/* AI Generations Usage */}
+                <div className="p-3 rounded-xl bg-secondary-50/60 dark:bg-secondary-800/30 border border-secondary-100 dark:border-secondary-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-secondary-700 dark:text-secondary-300 flex items-center gap-1.5">
+                      <Sparkles className="h-4 w-4 text-purple-500" />
+                      AI Generations
+                    </span>
+                    <span className="text-sm font-semibold text-secondary-900 dark:text-white">
+                      {subscription.ai_generations.limit === -1 ? 'Unlimited' : `${subscription.ai_generations.used} / ${subscription.ai_generations.limit}`}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
+                    <div
+                      className={cn(
+                        'h-full transition-all duration-300',
+                        subscription.ai_generations.percentage >= 100 ? 'bg-red-500' : 'bg-purple-500'
+                      )}
+                      style={{ width: `${subscription.ai_generations.percentage}%` }}
+                    />
+                  </div>
+                  <div className="text-xs text-secondary-500 font-mono mt-1">
+                    {subscription.ai_generations.limit === -1 
+                      ? 'Unlimited remaining' 
+                      : `AI: ${formatNumber(subscription.ai_generations.limit)} total | ${formatNumber(subscription.ai_generations.used)} used | ${formatNumber(subscription.ai_generations.remaining)} remaining`}
+                  </div>
+                </div>
               </div>
 
-              {/* AI Generations Usage */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-secondary-700 dark:text-secondary-300">AI Generations</span>
-                  <span className="text-sm text-secondary-500 dark:text-secondary-400">
-                    {subscription.ai_generations.limit === -1 ? 'Unlimited' : `${subscription.ai_generations.used} / ${subscription.ai_generations.limit}`}
-                  </span>
+              <div className="mt-4 pt-4 border-t border-secondary-200 dark:border-secondary-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <span className="text-secondary-600 dark:text-secondary-400">
+                  {subscription.current_period_end ? (
+                    <>
+                      <span>Duration: {subscription.plan.duration || (subscription.duration_months ? `${subscription.duration_months} Months` : 'Access')}</span>
+                      <span className="mx-2">•</span>
+                      <span>
+                        Expires on{' '}
+                        {new Date(subscription.current_period_end).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </span>
+                      {subscription.days_remaining !== undefined && (
+                        <span className="ml-1 text-secondary-500">
+                          ({subscription.days_remaining} {subscription.days_remaining === 1 ? 'day' : 'days'} remaining)
+                        </span>
+                      )}
+                    </>
+                  ) : 'Fixed duration access'}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Link href="/dashboard/billing">
+                    <Button variant="outline" size="sm">Choose Plan</Button>
+                  </Link>
+                  {(!subscription.is_active || subscription.is_blocked) && (
+                    <Link href="/dashboard/billing">
+                      <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white font-medium">
+                        Pay Now
+                      </Button>
+                    </Link>
+                  )}
                 </div>
-                <div className="h-2 bg-secondary-200 dark:bg-secondary-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-purple-500 transition-all duration-300"
-                    style={{ width: `${subscription.ai_generations.percentage}%` }}
-                  />
-                </div>
-                {subscription.ai_generations.limit !== -1 && subscription.ai_generations.percentage >= 80 && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    {subscription.ai_generations.percentage >= 100 ? 'Limit reached' : 'Approaching limit'}
-                  </p>
-                )}
               </div>
-            </div>
-
-            <div className="mt-4 pt-4 border-t border-secondary-200 dark:border-secondary-700 flex items-center justify-between">
-              <span className="text-sm text-secondary-600 dark:text-secondary-400">
-                Resets on{' '}
-                {subscription.current_period_end
-                  ? new Date(subscription.current_period_end).toLocaleDateString('en-US', {
-                      month: 'short',
-                      day: 'numeric',
-                      year: 'numeric',
-                    })
-                  : 'Next billing cycle'}
-              </span>
-              <Link href="/dashboard/billing">
-                <Button variant="outline" size="sm">Manage Plan</Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Chart & Recent Feedback */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

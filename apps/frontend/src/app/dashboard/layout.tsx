@@ -3,16 +3,19 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Menu, X, ChevronLeft, ChevronRight, LogOut, LayoutDashboard, QrCode, BarChart2, Settings, Building2, Users, Bell, HelpCircle, CreditCard, Loader2, ShieldAlert } from 'lucide-react';
+import { Menu, X, ChevronLeft, ChevronRight, LogOut, LayoutDashboard, QrCode, BarChart2, Settings, Building2, Users, Bell, HelpCircle, CreditCard, Loader2, ShieldAlert, UserCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/lib/auth-provider';
 import { onboardingTracker } from '@/lib/onboarding-tracker';
+import { api } from '@/lib/api-client';
+import { PayNowLockModal } from '@/components/subscription/PayNowLockModal';
 import { cn } from '@/lib/utils';
 
 const navigation = [
   { name: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Businesses', href: '/dashboard/businesses', icon: Building2 },
+  { name: 'Customers', href: '/dashboard/customers', icon: UserCheck },
   { name: 'QR Codes', href: '/dashboard/qr-codes', icon: QrCode },
   { name: 'Analytics', href: '/dashboard/analytics', icon: BarChart2 },
   { name: 'Team', href: '/dashboard/team', icon: Users },
@@ -28,6 +31,61 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [collapsed, setCollapsed] = useState(false);
   const [checkingOnboarding, setCheckingOnboarding] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [subStatus, setSubStatus] = useState<{
+    is_active: boolean;
+    is_blocked: boolean;
+    exhaustion_reason: string | null;
+    block_message: string | null;
+    plan_name?: string;
+  } | null>(null);
+
+  // Check subscription access status on route entry and business changes
+  useEffect(() => {
+    if (!user || user.role === 'admin') return;
+
+    let isMounted = true;
+    const loadStatus = (bizId?: string | null) => {
+      const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      const queryBizId = searchParams?.get('business_id');
+      const storedBizId = typeof window !== 'undefined' ? localStorage.getItem('reviewai_active_business_id') : null;
+      const targetBizId = bizId || queryBizId || storedBizId;
+      const subQuery = targetBizId ? `?business_id=${encodeURIComponent(targetBizId)}` : '';
+
+      api.get<{ data: any }>(`/subscription/status${subQuery}`)
+        .then((res: { data: any }) => {
+          if (isMounted && res.data) {
+            setSubStatus({
+              is_active: res.data.is_active,
+              is_blocked: Boolean(res.data.is_blocked),
+              exhaustion_reason: res.data.exhaustion_reason,
+              block_message: res.data.block_message,
+              plan_name: res.data.plan?.name,
+            });
+          }
+        })
+        .catch((err: unknown) => {
+          console.error('Failed to load subscription status in layout:', err);
+        });
+    };
+
+    loadStatus();
+
+    const handleBizChange = (e: any) => {
+      const newBizId = e?.detail?.business_id;
+      loadStatus(newBizId);
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('reviewai_business_changed', handleBizChange);
+    }
+
+    return () => {
+      isMounted = false;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('reviewai_business_changed', handleBizChange);
+      }
+    };
+  }, [user, pathname]);
 
   // Check onboarding status on mount and when auth state changes
   useEffect(() => {
@@ -265,6 +323,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
           </div>
         </header>
+
+        {/* Automatic Access Lock Modal & Sticky Notification */}
+        {subStatus && (
+          <PayNowLockModal
+            isBlocked={subStatus.is_blocked}
+            exhaustionReason={subStatus.exhaustion_reason}
+            customMessage={subStatus.block_message}
+            planName={subStatus.plan_name}
+          />
+        )}
 
         {/* Page content */}
         <main className="p-4 lg:p-6" role="main">

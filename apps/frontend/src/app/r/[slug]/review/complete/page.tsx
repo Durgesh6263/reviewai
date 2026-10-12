@@ -11,6 +11,7 @@ import { api } from '@/lib/api-client';
 import { toast } from 'react-hot-toast';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { sendReliableAnalyticsBeacon, openGoogleReviewDestination } from '@/lib/analytics-beacon';
+import { safeSessionStorage } from '@/lib/storage';
 
 const RATING_LABELS = [
   { value: 1, label: 'Terrible', emoji: '😞' },
@@ -39,7 +40,7 @@ export default function ReviewCompletePage() {
 
   useEffect(() => {
     // Load stored review text
-    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('review_text') : null;
+    const saved = safeSessionStorage.getItem('review_text');
     if (saved) {
       setReviewText(saved);
     }
@@ -82,7 +83,7 @@ export default function ReviewCompletePage() {
     }
 
     // Dispatch reliable copy beacon
-    const activeSessionId = typeof window !== 'undefined' ? sessionStorage.getItem(`reviewai_session_${slug}`) || sessionStorage.getItem('review_session_id') : null;
+    const activeSessionId = safeSessionStorage.getItem(`reviewai_session_${slug}`) || safeSessionStorage.getItem('review_session_id');
     if (activeSessionId) {
       sendReliableAnalyticsBeacon('/review/sessions/copy', { session_id: activeSessionId });
     }
@@ -106,7 +107,7 @@ export default function ReviewCompletePage() {
     isOpeningRef.current = true;
     setIsOpening(true);
 
-    const activeSessionId = typeof window !== 'undefined' ? sessionStorage.getItem(`reviewai_session_${slug}`) || sessionStorage.getItem('review_session_id') : null;
+    const activeSessionId = safeSessionStorage.getItem(`reviewai_session_${slug}`) || safeSessionStorage.getItem('review_session_id');
     if (activeSessionId) {
       sendReliableAnalyticsBeacon('/review/sessions/complete', {
         session_id: activeSessionId,

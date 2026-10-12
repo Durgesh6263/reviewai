@@ -82,6 +82,7 @@ export interface TokenUsage {
 
 export interface GenerateReviewRequest {
   session_id: string;
+  business_id?: string;
   rating: number;
   language?: string;
   tags?: string[];

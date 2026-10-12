@@ -274,6 +274,30 @@ export class SubscriptionService {
     }
 
     if (data.metadata) {
+      const IMMUTABLE_FIELDS = [
+        'plan_version_id',
+        'plan_version_number',
+        'price_inr',
+        'amount',
+        'allocated_qr_quota',
+        'total_qr_quota',
+        'allocated_ai_quota',
+        'total_ai_quota',
+        'duration_months',
+        'duration_days',
+        'max_qr_codes',
+        'activated_at',
+        'history',
+        'trial_version',
+        'is_trial',
+      ];
+
+      for (const field of IMMUTABLE_FIELDS) {
+        if (field in data.metadata && data.metadata[field] !== (subscription.metadata as any)?.[field]) {
+          throw new ValidationError(`Cannot modify immutable subscription snapshot field: '${field}'`);
+        }
+      }
+
       updates.metadata = { ...subscription.metadata, ...data.metadata };
     }
 

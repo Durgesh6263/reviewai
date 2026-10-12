@@ -126,6 +126,16 @@ export const PERMISSIONS = {
   'admin:businesses': ['admin'] as UserRole[],
   'admin:revenue': ['admin'] as UserRole[],
   'admin:audit': ['admin'] as UserRole[],
+
+  // Customer permissions
+  'customers.view': ['admin', 'business_owner', 'staff'] as UserRole[],
+  'customers.create': ['admin', 'business_owner'] as UserRole[],
+  'customers.edit': ['admin', 'business_owner'] as UserRole[],
+  'customers.delete': ['admin', 'business_owner'] as UserRole[],
+  'customers:read': ['admin', 'business_owner', 'staff'] as UserRole[],
+  'customers:create': ['admin', 'business_owner'] as UserRole[],
+  'customers:update': ['admin', 'business_owner'] as UserRole[],
+  'customers:delete': ['admin', 'business_owner'] as UserRole[],
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
