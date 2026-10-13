@@ -512,6 +512,15 @@ function startServer(): void {
   }
 }
 
+// Handle process-level errors safely without crashing the server
+process.on('unhandledRejection', (reason: unknown) => {
+  logger.warn({ reason }, 'Unhandled promise rejection intercepted by process handler');
+});
+
+process.on('uncaughtException', (error: Error) => {
+  logger.error({ error: error.message, stack: error.stack }, 'Uncaught exception intercepted by process handler');
+});
+
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
@@ -522,6 +531,25 @@ process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down gracefully...');
   process.exit(0);
 });
+
+// Production Render Free-Tier Keep-Alive
+// In Render free tier, web services spin down after 15 minutes of inactivity, causing ~55s cold-boot 502 outages.
+// An internal HTTP ping to /health/live every 8 minutes maintains active ingress without DB load.
+if (process.env.NODE_ENV === 'production') {
+  const publicBackendUrl = process.env.PUBLIC_BACKEND_URL || 'https://reviewai-4g7n.onrender.com';
+  const keepAliveInterval = setInterval(async () => {
+    try {
+      await fetch(`${publicBackendUrl}/health/live`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      logger.info('Keep-alive ping to Render public host succeeded');
+    } catch (err: any) {
+      logger.warn({ error: err.message }, 'Keep-alive ping failed (non-fatal)');
+    }
+  }, 8 * 60 * 1000); // 8 minutes (inactivity threshold is 15 minutes)
+
+  keepAliveInterval.unref();
+}
 
 // Start the server
 startServer();

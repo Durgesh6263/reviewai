@@ -107,10 +107,11 @@ class ApiClient {
 
         // Handle auth endpoints
         if (originalRequest.url?.includes('/auth/')) {
-          // If upstream server is cold/waking up (502 Bad Gateway, 503, 504), perform at most 1 fast retry
+          // If upstream server is cold/waking up (502 Bad Gateway, 503, 504) or timeout, perform at most 1 fast retry
           const isUpstreamColdStart =
-            error.response &&
-            (error.response.status === 502 || error.response.status === 503 || error.response.status === 504);
+            (!error.response && (error.code === 'ECONNABORTED' || error.message === 'Network Error')) ||
+            (error.response &&
+              (error.response.status === 502 || error.response.status === 503 || error.response.status === 504));
           const retryCount = (originalRequest as any)._authRetryCount || 0;
 
           if (isUpstreamColdStart && retryCount < 1) {
@@ -155,6 +156,19 @@ class ApiClient {
           if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/admin')) {
             window.location.href = '/dashboard';
           }
+        }
+
+        // Handle transient 502/503/504 gateway or cold-start drops on general API requests (max 1 retry)
+        const isUpstream5xxOrTimeout =
+          (!error.response && (error.code === 'ECONNABORTED' || error.message === 'Network Error')) ||
+          (error.response &&
+            (error.response.status === 502 || error.response.status === 503 || error.response.status === 504));
+
+        const generalRetryCount = (originalRequest as any)._generalRetryCount || 0;
+        if (isUpstream5xxOrTimeout && generalRetryCount < 1) {
+          (originalRequest as any)._generalRetryCount = generalRetryCount + 1;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          return this.client(originalRequest);
         }
 
         return Promise.reject(error);

@@ -1,11 +1,16 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { AuthProvider } from '@/lib/auth-provider';
 import { ThemeProvider } from '@/lib/theme-provider';
 
 export function Providers({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    // Proactively warm up backend service on initial client session mount
+    fetch('/api/backend/health', { method: 'GET' }).catch(() => {});
+  }, []);
+
   const [queryClient] = useState(
     () =>
       new QueryClient({

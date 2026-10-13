@@ -166,10 +166,16 @@ export class AuthService {
     await this.storeRefreshToken(user.id, tokens.refresh_token);
 
     // Run post-login updates asynchronously without blocking response
-    void this.supabase
-      .from('users')
-      .update({ last_login_at: new Date().toISOString() })
-      .eq('id', user.id);
+    (async () => {
+      try {
+        await this.supabase
+          .from('users')
+          .update({ last_login_at: new Date().toISOString() })
+          .eq('id', user.id);
+      } catch (err: any) {
+        logger.warn({ err: err?.message, userId: user.id }, 'Non-fatal: Failed to update last_login_at');
+      }
+    })();
 
     // Cache active account status
     this.accountStatusCache.set(user.id, { status: 'active', expiresAt: Date.now() + 60_000 });
