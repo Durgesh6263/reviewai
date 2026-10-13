@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, Suspense } from 'react';
+import { useState, useRef, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -30,6 +30,11 @@ function LoginForm() {
   const isSubmittingRef = useRef(false);
 
   const redirect = searchParams.get('redirect') || '/dashboard';
+
+  // Proactively warm up backend service if asleep on free-tier hosting
+  useEffect(() => {
+    fetch('/api/backend/health', { method: 'GET' }).catch(() => {});
+  }, []);
 
   const {
     register,
@@ -62,12 +67,26 @@ function LoginForm() {
       router.refresh();
     } catch (error: any) {
       const errData = error.response?.data;
-      if (error.response?.status === 429) {
-        const raw429 = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || 'Too many attempts. Please try again later.';
+      const status = error.response?.status;
+
+      if (status === 429) {
+        const raw429 = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || 'Too many attempts. Please try again in 15 minutes.';
         toast.error(typeof raw429 === 'string' ? raw429 : JSON.stringify(raw429));
+      } else if (status === 502 || status === 503 || status === 504) {
+        toast.error('Authentication service is warming up or temporarily unreachable. Please try again in a few moments.');
+      } else if (!error.response || error.code === 'ECONNABORTED' || error.message === 'Network Error') {
+        toast.error('Unable to connect to the server. Please check your internet connection and try again.');
       } else {
-        const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Invalid email or password';
-        const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
+        let message = 'Invalid email or password';
+        if (typeof errData?.error === 'string') {
+          message = errData.error;
+        } else if (typeof errData?.message === 'string') {
+          message = errData.message;
+        } else if (typeof errData?.error?.message === 'string') {
+          message = errData.error.message;
+        } else if (error.message && typeof error.message === 'string' && !error.message.includes('502') && !error.message.includes('503') && !error.message.includes('504')) {
+          message = error.message;
+        }
         toast.error(message);
       }
     } finally {

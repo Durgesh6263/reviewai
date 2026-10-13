@@ -267,7 +267,7 @@ async function checkExternalDependencies(): Promise<Record<string, { healthy: bo
   return results;
 }
 
-app.get('/health', async (_req: Request, res: Response) => {
+const handleHealth = async (_req: Request, res: Response) => {
   const [dbHealth, externalDeps] = await Promise.all([
     checkSupabaseHealth(),
     checkExternalDependencies(),
@@ -283,9 +283,9 @@ app.get('/health', async (_req: Request, res: Response) => {
     database: dbHealth,
     dependencies: externalDeps,
   });
-});
+};
 
-app.get('/health/ready', async (_req: Request, res: Response) => {
+const handleHealthReady = async (_req: Request, res: Response) => {
   const [dbHealth, externalDeps] = await Promise.all([
     checkSupabaseHealth(),
     checkExternalDependencies(),
@@ -302,11 +302,18 @@ app.get('/health/ready', async (_req: Request, res: Response) => {
     });
   }
   res.json({ status: 'ready', dependencies: externalDeps });
-});
+};
 
-app.get('/health/live', (_req: Request, res: Response) => {
+const handleHealthLive = (_req: Request, res: Response) => {
   res.json({ status: 'alive' });
-});
+};
+
+app.get('/health', handleHealth);
+app.get('/health/ready', handleHealthReady);
+app.get('/health/live', handleHealthLive);
+app.get(`${API_PREFIX}/health`, handleHealth);
+app.get(`${API_PREFIX}/health/ready`, handleHealthReady);
+app.get(`${API_PREFIX}/health/live`, handleHealthLive);
 
 // Detailed health check for debugging
 app.get('/health/details', async (_req: Request, res: Response) => {

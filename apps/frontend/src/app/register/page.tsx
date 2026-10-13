@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -76,6 +76,11 @@ function RegisterForm() {
 
   const strength = [hasMinLength, hasUpper, hasLower, hasNumber, hasSpecial].filter(Boolean).length;
 
+  // Proactively warm up backend service if asleep on free-tier hosting
+  useEffect(() => {
+    fetch('/api/backend/health', { method: 'GET' }).catch(() => {});
+  }, []);
+
   const onSubmit = async (data: RegisterForm) => {
     setIsSubmitting(true);
     try {
@@ -90,6 +95,17 @@ function RegisterForm() {
       router.refresh();
     } catch (error: any) {
       const errData = error.response?.data;
+      const status = error.response?.status;
+
+      if (status === 502 || status === 503 || status === 504) {
+        toast.error('Registration service is warming up or temporarily unreachable. Please try again in a few moments.');
+        return;
+      }
+      if (!error.response || error.code === 'ECONNABORTED' || error.message === 'Network Error') {
+        toast.error('Unable to connect to the server. Please check your internet connection and try again.');
+        return;
+      }
+
       if (errData?.details) {
         let hasSetField = false;
         Object.entries(errData.details).forEach(([field, val]: [string, any]) => {
@@ -104,7 +120,7 @@ function RegisterForm() {
         });
         if (hasSetField) return;
       }
-      const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || error.message || 'Registration failed. Please try again.';
+      const rawMsg = errData?.error?.message || errData?.message || (typeof errData?.error === 'string' ? errData.error : null) || (error.message && !error.message.includes('502') && !error.message.includes('503') && !error.message.includes('504') ? error.message : null) || 'Registration failed. Please try again.';
       const message = typeof rawMsg === 'string' ? rawMsg : JSON.stringify(rawMsg);
       toast.error(message);
     } finally {

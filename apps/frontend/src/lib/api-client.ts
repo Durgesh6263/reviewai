@@ -105,8 +105,20 @@ class ApiClient {
           return Promise.reject(error);
         }
 
-        // Don't retry auth endpoints
+        // Handle auth endpoints
         if (originalRequest.url?.includes('/auth/')) {
+          // If upstream server is cold/waking up (502 Bad Gateway, 503, 504), perform at most 1 fast retry
+          const isUpstreamColdStart =
+            error.response &&
+            (error.response.status === 502 || error.response.status === 503 || error.response.status === 504);
+          const retryCount = (originalRequest as any)._authRetryCount || 0;
+
+          if (isUpstreamColdStart && retryCount < 1) {
+            (originalRequest as any)._authRetryCount = retryCount + 1;
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            return this.client(originalRequest);
+          }
+
           return Promise.reject(error);
         }
 

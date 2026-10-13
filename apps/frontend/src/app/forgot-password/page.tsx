@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -25,6 +25,11 @@ export default function ForgotPasswordPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [step, setStep] = useState<'request' | 'sent'>('request');
 
+  // Proactively warm up backend service if asleep on free-tier hosting
+  useEffect(() => {
+    fetch('/api/backend/health', { method: 'GET' }).catch(() => {});
+  }, []);
+
   const {
     register,
     handleSubmit,
@@ -45,7 +50,16 @@ export default function ForgotPasswordPage() {
       setStep('sent');
       reset();
     } catch (error: any) {
-      // Don't reveal if email exists or not for security
+      const status = error.response?.status;
+      if (status === 502 || status === 503 || status === 504) {
+        toast.error('Password reset service is warming up or temporarily unreachable. Please try again in a few moments.');
+        return;
+      }
+      if (!error.response || error.code === 'ECONNABORTED' || error.message === 'Network Error') {
+        toast.error('Unable to connect to the server. Please check your internet connection and try again.');
+        return;
+      }
+      // For standard responses, don't reveal if email exists or not for security
       toast.success('If the email exists, a reset link has been sent');
       setStep('sent');
       reset();
