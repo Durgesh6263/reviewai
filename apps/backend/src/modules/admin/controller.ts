@@ -150,6 +150,25 @@ export class AdminController {
     }
   }
 
+  async getTestDataResetPreview(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const preview = await this.adminService.getTestDataResetPreview();
+      res.json({ success: true, data: preview });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async executeTestDataReset(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const adminUserId = req.user?.sub || 'admin';
+      const result = await this.adminService.executeTestDataReset(adminUserId, req.body);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async updateSubscription(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;

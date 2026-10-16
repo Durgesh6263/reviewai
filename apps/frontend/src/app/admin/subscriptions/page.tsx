@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Search, Filter, MoreVertical, CreditCard, Loader2, Trash2, Edit, Eye, Calendar, AlertCircle, CheckCircle, XCircle, Clock, IndianRupee, TrendingUp, Users } from 'lucide-react';
+import { Search, Filter, MoreVertical, CreditCard, Loader2, Trash2, Edit, Eye, Calendar, AlertCircle, CheckCircle, XCircle, Clock, IndianRupee, TrendingUp, Users, AlertTriangle, ShieldCheck, Database, RefreshCw, BarChart2, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { api } from '@/lib/api-client';
 import { formatDate, formatCurrency, formatNumber } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -100,6 +101,29 @@ interface UserSubscriptionUsage {
   businesses?: any[];
 }
 
+interface DailyRevenueBreakdown {
+  date: string;
+  revenue_inr: number;
+  count: number;
+}
+
+interface MonthlyRevenueBreakdown {
+  month: string;
+  label: string;
+  revenue_inr: number;
+  count: number;
+}
+
+interface RevenueAnalytics {
+  start_date: string;
+  end_date: string;
+  total_revenue_inr: number;
+  successful_payments_count: number;
+  daily_breakdown: DailyRevenueBreakdown[];
+  monthly_breakdown: MonthlyRevenueBreakdown[];
+  include_test: boolean;
+}
+
 interface SubscriptionStats {
   total_subscriptions: number;
   active_subscriptions: number;
@@ -108,6 +132,10 @@ interface SubscriptionStats {
   trialing_subscriptions: number;
   mrr: number;
   arr: number;
+  revenue_this_month?: number;
+  revenue_last_month?: number;
+  revenue_analytics?: RevenueAnalytics;
+  fresh_start_at?: string | null;
   plan_distribution: { plan: string; count: number }[];
   status_distribution: { status: string; count: number }[];
   user_subscriptions?: UserSubscriptionUsage[];
@@ -132,6 +160,38 @@ export default function AdminSubscriptionsPage() {
   const [overviewPlanFilter, setOverviewPlanFilter] = useState('all');
   const [overviewStatusFilter, setOverviewStatusFilter] = useState('all');
 
+  // Revenue Analytics Date Range & Test Data Filter
+  const [startDate, setStartDate] = useState<string>(() => {
+    const d = new Date();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    return `${d.getFullYear()}-${month}-01`;
+  });
+  const [endDate, setEndDate] = useState<string>(() => {
+    const d = new Date();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${month}-${day}`;
+  });
+  const [appliedStartDate, setAppliedStartDate] = useState<string>(() => {
+    const d = new Date();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    return `${d.getFullYear()}-${month}-01`;
+  });
+  const [appliedEndDate, setAppliedEndDate] = useState<string>(() => {
+    const d = new Date();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${month}-${day}`;
+  });
+  const [includeTestRevenue, setIncludeTestRevenue] = useState<boolean>(false);
+
+  // Test Data Reset Modal state
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetPreview, setResetPreview] = useState<any | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [confirmResetChecked, setConfirmResetChecked] = useState(false);
+
   // Debounce overview search
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -139,6 +199,81 @@ export default function AdminSubscriptionsPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [overviewSearch]);
+
+  const handleApplyDateRange = () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+  };
+
+  const handleQuickPreset = (preset: 'this_month' | 'last_month' | 'last_30_days') => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+
+    if (preset === 'this_month') {
+      const s = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      const e = `${year}-${String(month + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      setStartDate(s);
+      setEndDate(e);
+      setAppliedStartDate(s);
+      setAppliedEndDate(e);
+    } else if (preset === 'last_month') {
+      const prevYear = month === 0 ? year - 1 : year;
+      const prevMonth = month === 0 ? 11 : month - 1;
+      const lastDay = new Date(prevYear, prevMonth + 1, 0).getDate();
+      const s = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}-01`;
+      const e = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      setStartDate(s);
+      setEndDate(e);
+      setAppliedStartDate(s);
+      setAppliedEndDate(e);
+    } else if (preset === 'last_30_days') {
+      const prior = new Date(now.getTime() - 30 * 86400000);
+      const s = `${prior.getFullYear()}-${String(prior.getMonth() + 1).padStart(2, '0')}-${String(prior.getDate()).padStart(2, '0')}`;
+      const e = `${year}-${String(month + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      setStartDate(s);
+      setEndDate(e);
+      setAppliedStartDate(s);
+      setAppliedEndDate(e);
+    }
+  };
+
+  const handleOpenResetModal = async () => {
+    setShowResetModal(true);
+    setConfirmResetChecked(false);
+    setIsLoadingPreview(true);
+    try {
+      const res = await api.get<{ data: any }>('/admin/subscriptions/test-data/preview');
+      setResetPreview(res.data);
+    } catch (err: any) {
+      toast.error('Failed to load test data preview');
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
+  const handleExecuteReset = async () => {
+    if (!confirmResetChecked) {
+      toast.error('Please check the confirmation box to proceed');
+      return;
+    }
+    setIsResetting(true);
+    try {
+      const res = await api.post<{ success: boolean; message: string }>('/admin/subscriptions/test-data/reset', {
+        confirm: true,
+        reset_usage_counters: true,
+        mark_test_payments: true,
+        set_fresh_start_baseline: true,
+      });
+      toast.success(res.message || 'Fresh start established and test data reset successfully');
+      setShowResetModal(false);
+      fetchSubscriptions();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || err.response?.data?.message || 'Failed to reset test data');
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const fetchSubscriptions = async () => {
     try {
@@ -155,6 +290,9 @@ export default function AdminSubscriptionsPage() {
       if (debouncedOverviewSearch.trim()) statsParams.append('search', debouncedOverviewSearch.trim());
       if (overviewPlanFilter !== 'all') statsParams.append('plan', overviewPlanFilter);
       if (overviewStatusFilter !== 'all') statsParams.append('status', overviewStatusFilter);
+      if (appliedStartDate) statsParams.append('start_date', appliedStartDate);
+      if (appliedEndDate) statsParams.append('end_date', appliedEndDate);
+      if (includeTestRevenue) statsParams.append('include_test', 'true');
 
       const [subsResponse, statsResponse] = await Promise.all([
         api.get<PaginatedResponse<Subscription>>(`/admin/subscriptions?${params.toString()}`),
@@ -174,7 +312,7 @@ export default function AdminSubscriptionsPage() {
 
   useEffect(() => {
     fetchSubscriptions();
-  }, [currentPage, searchQuery, statusFilter, planFilter, debouncedOverviewSearch, overviewPlanFilter, overviewStatusFilter]);
+  }, [currentPage, searchQuery, statusFilter, planFilter, debouncedOverviewSearch, overviewPlanFilter, overviewStatusFilter, appliedStartDate, appliedEndDate, includeTestRevenue]);
 
   const handleCancel = async (id: string, businessName: string) => {
     if (!confirm(`Are you sure you want to cancel the subscription for "${businessName}"? This will take effect at the end of the billing period.`)) {
@@ -346,39 +484,49 @@ export default function AdminSubscriptionsPage() {
 
           {/* Overview Tab */}
           <TabsContent value="overview" className="space-y-6">
+            {/* Top Revenue & Subscription KPI Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <Card>
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">MRR</p>
-                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">{formatCurrency(stats.mrr)}</span>
+                      <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">Revenue This Month</p>
+                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">
+                        {formatCurrency(stats.revenue_this_month ?? 0)}
+                      </span>
+                      <p className="text-xs text-secondary-500 mt-1">Verified captured revenue</p>
                     </div>
-                    <div className="p-3 rounded-xl bg-green-50 dark:bg-green-900/20">
-                      <IndianRupee className="h-6 w-6 text-green-500" />
+                    <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20">
+                      <IndianRupee className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
                     </div>
                   </div>
                 </CardContent>
               </Card>
+
               <Card>
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">ARR</p>
-                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">{formatCurrency(stats.arr)}</span>
+                      <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">Revenue Last Month</p>
+                      <span className="text-3xl font-bold text-secondary-900 dark:text-white">
+                        {formatCurrency(stats.revenue_last_month ?? 0)}
+                      </span>
+                      <p className="text-xs text-secondary-500 mt-1">Previous calendar month</p>
                     </div>
                     <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-900/20">
-                      <TrendingUp className="h-6 w-6 text-blue-500" />
+                      <Calendar className="h-6 w-6 text-blue-600 dark:text-blue-400" />
                     </div>
                   </div>
                 </CardContent>
               </Card>
+
               <Card>
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">Active Subscriptions</p>
                       <span className="text-3xl font-bold text-secondary-900 dark:text-white">{formatNumber(stats.active_subscriptions)}</span>
+                      <p className="text-xs text-secondary-500 mt-1">Unique client users</p>
                     </div>
                     <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-900/20">
                       <CheckCircle className="h-6 w-6 text-purple-500" />
@@ -386,12 +534,14 @@ export default function AdminSubscriptionsPage() {
                   </div>
                 </CardContent>
               </Card>
+
               <Card>
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-medium text-secondary-600 dark:text-secondary-400">Total Subscriptions</p>
                       <span className="text-3xl font-bold text-secondary-900 dark:text-white">{formatNumber(stats.total_subscriptions)}</span>
+                      <p className="text-xs text-secondary-500 mt-1">Total account holders</p>
                     </div>
                     <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-900/20">
                       <Users className="h-6 w-6 text-orange-500" />
@@ -400,6 +550,229 @@ export default function AdminSubscriptionsPage() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* Date-Range Revenue Analytics Section */}
+            <Card className="border shadow-sm">
+              <CardHeader className="pb-4">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                  <div>
+                    <CardTitle className="text-lg font-bold flex items-center gap-2">
+                      <BarChart2 className="h-5 w-5 text-primary-500" />
+                      Date-Wise Revenue Analytics
+                    </CardTitle>
+                    <CardDescription className="text-xs text-secondary-500 mt-1">
+                      Authoritative verified payment revenue. Excludes failed/pending payments and prevents double-counting.
+                    </CardDescription>
+                  </div>
+                  
+                  {/* Action: Fresh Start & Test Data Preview */}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleOpenResetModal}
+                      className="flex items-center gap-1.5 border-amber-300 dark:border-amber-700/60 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 text-xs"
+                    >
+                      <Database className="h-3.5 w-3.5" />
+                      <span>Fresh Start & Test Data Reset</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Filter Toolbar */}
+                <div className="mt-4 pt-4 border-t flex flex-wrap items-center justify-between gap-3 text-sm">
+                  {/* Date Inputs */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-secondary-600 dark:text-secondary-400">From:</span>
+                      <Input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="h-8 w-36 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-secondary-600 dark:text-secondary-400">To:</span>
+                      <Input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="h-8 w-36 text-xs"
+                      />
+                    </div>
+                    <Button size="sm" onClick={handleApplyDateRange} className="h-8 text-xs px-3">
+                      Apply Filter
+                    </Button>
+                  </div>
+
+                  {/* Preset Buttons */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-secondary-400 hidden sm:inline">Presets:</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleQuickPreset('this_month')}
+                      className="h-7 text-xs px-2"
+                    >
+                      This Month
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleQuickPreset('last_month')}
+                      className="h-7 text-xs px-2"
+                    >
+                      Last Month
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleQuickPreset('last_30_days')}
+                      className="h-7 text-xs px-2"
+                    >
+                      Last 30 Days
+                    </Button>
+                  </div>
+
+                  {/* Include Test Data Toggle */}
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-xs text-secondary-600 dark:text-secondary-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={includeTestRevenue}
+                        onChange={(e) => setIncludeTestRevenue(e.target.checked)}
+                        className="h-4 w-4 rounded border-secondary-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                      />
+                      <span>Include Test Data</span>
+                    </label>
+                  </div>
+                </div>
+              </CardHeader>
+
+              <CardContent className="space-y-6">
+                {/* Metric Summary Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="rounded-xl p-4 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40">
+                    <p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">Total Verified Revenue</p>
+                    <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100 mt-1">
+                      {formatCurrency(stats.revenue_analytics?.total_revenue_inr ?? 0)}
+                    </p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
+                      INR captured for selected range
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl p-4 bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800/40">
+                    <p className="text-xs font-medium text-indigo-800 dark:text-indigo-300">Successful Payments</p>
+                    <p className="text-2xl font-bold text-indigo-900 dark:text-indigo-100 mt-1">
+                      {stats.revenue_analytics?.successful_payments_count ?? 0}
+                    </p>
+                    <p className="text-xs text-indigo-600 dark:text-indigo-400 mt-0.5">
+                      Verified transaction count
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl p-4 bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
+                    <p className="text-xs font-medium text-slate-600 dark:text-slate-400">Baseline Status</p>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      {includeTestRevenue ? (
+                        <Badge variant="outline" className="text-xs bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border-amber-300">
+                          Including Test Records
+                        </Badge>
+                      ) : stats.fresh_start_at ? (
+                        <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border-emerald-300">
+                          Fresh Start Baseline Active
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300 border-blue-300">
+                          Production Standard
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-secondary-500 mt-1">
+                      {stats.revenue_analytics?.start_date} to {stats.revenue_analytics?.end_date}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Monthly Revenue Breakdown (if spanning multiple months) */}
+                {(stats.revenue_analytics?.monthly_breakdown?.length ?? 0) >= 2 && (
+                  <div className="space-y-2 pt-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-secondary-500">
+                      Monthly Revenue Breakdown
+                    </h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                      {stats.revenue_analytics?.monthly_breakdown.map((m) => (
+                        <div key={m.month} className="p-3 rounded-lg border bg-secondary-50/50 dark:bg-secondary-900/50">
+                          <p className="text-xs font-medium text-secondary-700 dark:text-secondary-300">{m.label}</p>
+                          <p className="text-lg font-bold text-secondary-900 dark:text-white mt-1">
+                            {formatCurrency(m.revenue_inr)}
+                          </p>
+                          <p className="text-xs text-secondary-500">{m.count} {m.count === 1 ? 'payment' : 'payments'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Daily Revenue Breakdown */}
+                <div className="space-y-3 pt-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-secondary-500">
+                      Daily Revenue Breakdown
+                    </h4>
+                    <span className="text-xs text-secondary-400">
+                      {stats.revenue_analytics?.daily_breakdown.length ?? 0} days in range
+                    </span>
+                  </div>
+
+                  {(stats.revenue_analytics?.total_revenue_inr ?? 0) === 0 ? (
+                    <div className="rounded-xl border border-dashed p-8 text-center bg-secondary-50/50 dark:bg-secondary-900/30">
+                      <IndianRupee className="mx-auto h-8 w-8 text-secondary-400 mb-2 opacity-50" />
+                      <p className="text-sm font-medium text-secondary-700 dark:text-secondary-300">
+                        No verified revenue in this date range (₹0)
+                      </p>
+                      <p className="text-xs text-secondary-500 mt-1">
+                        Select a different date range or toggle &quot;Include Test Data&quot; to inspect past test payments.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border overflow-hidden">
+                      <div className="max-h-72 overflow-y-auto divide-y divide-secondary-100 dark:divide-secondary-800">
+                        {stats.revenue_analytics?.daily_breakdown
+                          .filter((d) => d.revenue_inr > 0 || stats.revenue_analytics!.daily_breakdown.length <= 14)
+                          .map((d) => {
+                            const maxRevenue = Math.max(...(stats.revenue_analytics?.daily_breakdown.map((item) => item.revenue_inr) || [1]));
+                            const pct = maxRevenue > 0 ? (d.revenue_inr / maxRevenue) * 100 : 0;
+                            return (
+                              <div key={d.date} className="p-3 flex items-center justify-between gap-4 text-xs hover:bg-secondary-50 dark:hover:bg-secondary-900/40">
+                                <span className="font-mono text-secondary-700 dark:text-secondary-300 w-28 shrink-0">
+                                  {d.date}
+                                </span>
+                                <div className="flex-1 max-w-xs">
+                                  <div className="h-2 bg-secondary-100 dark:bg-secondary-800 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-emerald-500 rounded-full transition-all"
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                                <span className="text-secondary-500 w-24 text-right">
+                                  {d.count} {d.count === 1 ? 'payment' : 'payments'}
+                                </span>
+                                <span className="font-bold text-secondary-900 dark:text-white w-24 text-right">
+                                  {formatCurrency(d.revenue_inr)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <Card>
@@ -918,8 +1291,173 @@ export default function AdminSubscriptionsPage() {
           </TabsContent>
         </Tabs>
       )}
+
+      {/* Test Data Reset Confirmation Dialog */}
+      <Dialog open={showResetModal} onOpenChange={setShowResetModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-xl font-bold">
+              <Database className="h-5 w-5 text-amber-500" />
+              Fresh Start & Test Data Reset
+            </DialogTitle>
+            <DialogDescription className="text-sm">
+              Distinguishes test data from genuine accounts and payment records, establishes a clean ₹0 reporting baseline, and preserves financial audit logs.
+            </DialogDescription>
+          </DialogHeader>
+
+          {isLoadingPreview ? (
+            <div className="py-12 flex flex-col items-center justify-center space-y-3">
+              <Loader2 className="h-8 w-8 animate-spin text-primary-500" />
+              <p className="text-sm text-secondary-500">Auditing repository & database for test data...</p>
+            </div>
+          ) : resetPreview ? (
+            <div className="space-y-6 py-2">
+              {/* Baseline Status Badge */}
+              <div className="p-3 rounded-lg border bg-secondary-50 dark:bg-secondary-900/50 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-semibold uppercase text-secondary-500">Current Reporting Baseline</span>
+                  <p className="text-sm font-medium text-secondary-900 dark:text-white mt-0.5">
+                    {resetPreview.is_fresh_start_active ? (
+                      <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                        Fresh-Start Baseline Active (since {new Date(resetPreview.fresh_start_at).toLocaleString()})
+                      </span>
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        Historical test data currently visible unless filtered
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <Badge variant={resetPreview.is_fresh_start_active ? 'default' : 'outline'}>
+                  {resetPreview.is_fresh_start_active ? 'Baseline Active' : 'Unreset'}
+                </Badge>
+              </div>
+
+              {/* Records Breakdown Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/40">
+                  <span className="font-semibold text-amber-800 dark:text-amber-300">Identified Test Users</span>
+                  <p className="text-2xl font-bold text-amber-900 dark:text-amber-100 mt-1">
+                    {resetPreview.test_users.length}
+                  </p>
+                  <p className="text-amber-700 dark:text-amber-400 text-[11px] mt-0.5">e.g. test@gmail.com</p>
+                </div>
+
+                <div className="p-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/40">
+                  <span className="font-semibold text-amber-800 dark:text-amber-300">Test Businesses</span>
+                  <p className="text-2xl font-bold text-amber-900 dark:text-amber-100 mt-1">
+                    {resetPreview.test_businesses.length}
+                  </p>
+                  <p className="text-amber-700 dark:text-amber-400 text-[11px] mt-0.5">Mock & audit businesses</p>
+                </div>
+
+                <div className="p-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/40">
+                  <span className="font-semibold text-amber-800 dark:text-amber-300">Test Payment Records</span>
+                  <p className="text-2xl font-bold text-amber-900 dark:text-amber-100 mt-1">
+                    {resetPreview.test_payments.length}
+                  </p>
+                  <p className="text-amber-700 dark:text-amber-400 text-[11px] mt-0.5">
+                    ₹{resetPreview.test_payments.reduce((s: number, p: any) => s + (p.amount_inr || 0), 0).toLocaleString()} test volume
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg border bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40">
+                  <span className="font-semibold text-emerald-800 dark:text-emerald-300">Preserved Admins</span>
+                  <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100 mt-1">
+                    {resetPreview.preserved_records.admin_users_count}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400 text-[11px] mt-0.5">Never modified or reset</p>
+                </div>
+
+                <div className="p-3 rounded-lg border bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40">
+                  <span className="font-semibold text-emerald-800 dark:text-emerald-300">Preserved Customers</span>
+                  <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100 mt-1">
+                    {resetPreview.preserved_records.genuine_users_count}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400 text-[11px] mt-0.5">Genuine account holders</p>
+                </div>
+
+                <div className="p-3 rounded-lg border bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40">
+                  <span className="font-semibold text-emerald-800 dark:text-emerald-300">Active Plans & Pricing</span>
+                  <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100 mt-1">
+                    {resetPreview.preserved_records.plans_count}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400 text-[11px] mt-0.5">Catalog & tier rules safe</p>
+                </div>
+              </div>
+
+              {/* Safety & Compliance Notice */}
+              <div className="p-4 rounded-xl border border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-2 text-xs">
+                <div className="flex items-center gap-2 font-semibold text-indigo-900 dark:text-indigo-200">
+                  <ShieldCheck className="h-4 w-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                  <span>Financial Data Integrity & Safety Guarantee</span>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-indigo-700 dark:text-indigo-300">
+                  <li>No genuine customer records or payment rows are deleted.</li>
+                  <li>Test transactions are marked as test data so they do not artificially inflate production MRR/revenue.</li>
+                  <li>Usage counters on test businesses are reset to 0 so fresh tests can be conducted.</li>
+                  <li>Subscription entitlements and QR expiry enforcement remain 100% operational.</li>
+                  <li>Production dashboard will report ₹0 for the fresh-start baseline.</li>
+                </ul>
+              </div>
+
+              {/* Confirmation Checkbox */}
+              <div className="pt-2">
+                <label className="flex items-start gap-3 p-3 rounded-lg border border-secondary-200 dark:border-secondary-800 hover:bg-secondary-50 dark:hover:bg-secondary-900/30 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={confirmResetChecked}
+                    onChange={(e) => setConfirmResetChecked(e.target.checked)}
+                    className="h-4 w-4 mt-0.5 rounded border-secondary-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-secondary-900 dark:text-white">
+                      Confirm Test Data Reset & Fresh Start Baseline
+                    </span>
+                    <p className="text-secondary-500 mt-0.5">
+                      I confirm establishing a ₹0 fresh-start reporting baseline. Test transactions will be excluded from production revenue without altering financial audit history.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div className="py-6 text-center text-sm text-secondary-500">
+              Unable to load preview. Please try again.
+            </div>
+          )}
+
+          <DialogFooter className="flex items-center justify-between sm:justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowResetModal(false)}
+              disabled={isResetting}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleExecuteReset}
+              disabled={!confirmResetChecked || isResetting || isLoadingPreview}
+              className="gap-2"
+            >
+              {isResetting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Establishing Fresh Start...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4" />
+                  <span>Confirm & Establish Fresh Start</span>
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
-
-import { Building2 } from 'lucide-react';

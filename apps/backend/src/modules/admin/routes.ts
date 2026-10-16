@@ -15,6 +15,7 @@ import {
   AdminSubscriptionListQuerySchema,
   AdminSubscriptionUpdateSchema,
   AdminSubscriptionStatsQuerySchema,
+  TestDataResetConfirmSchema,
   AdminSettingsUpdateSchema,
   AdminUpgradeRequestListQuerySchema,
   AdminUpgradeRequestStatusUpdateSchema,
@@ -56,6 +57,8 @@ router.get('/analytics', validate(z.object({ query: AdminAnalyticsQuerySchema })
 // Subscriptions
 router.get('/subscriptions', validate(z.object({ query: AdminSubscriptionListQuerySchema })), adminController.getSubscriptions.bind(adminController));
 router.get('/subscriptions/stats', validate(z.object({ query: AdminSubscriptionStatsQuerySchema.optional() })), adminController.getSubscriptionStats.bind(adminController));
+router.get('/subscriptions/test-data/preview', adminController.getTestDataResetPreview.bind(adminController));
+router.post('/subscriptions/test-data/reset', validate(z.object({ body: TestDataResetConfirmSchema })), adminController.executeTestDataReset.bind(adminController));
 router.patch('/subscriptions/:id', validate(z.object({ params: z.object({ id: z.string().uuid() }), body: AdminSubscriptionUpdateSchema })), adminController.updateSubscription.bind(adminController));
 router.post('/subscriptions/:id/cancel', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.cancelSubscription.bind(adminController));
 router.post('/subscriptions/:id/reactivate', validate(z.object({ params: z.object({ id: z.string().uuid() }) })), adminController.reactivateSubscription.bind(adminController));

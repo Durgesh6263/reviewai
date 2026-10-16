@@ -35,6 +35,7 @@ import { NotFoundError, ValidationError, ConflictError, AuthorizationError } fro
 import { entitlementService } from '../subscription/entitlement';
 import { planConfigService, PlanDurationKey } from './plan-config-service';
 import { AuthService } from '../auth/service';
+import { logger } from '../../shared/logger';
 
 export class AdminService {
   private statsCache: { data: AdminStats; expiresAt: number } | null = null;
@@ -1403,6 +1404,220 @@ export class AdminService {
       );
     }
 
+    // 7. Calculate Authoritative Verified Revenue Analytics
+    const { data: adminSettings } = await this.supabase
+      .from('admin_settings')
+      .select('limits')
+      .limit(1)
+      .maybeSingle();
+
+    const paymentHistory: any[] = Array.isArray(adminSettings?.limits?.payment_history)
+      ? adminSettings.limits.payment_history
+      : [];
+    const freshStartAt = adminSettings?.limits?.fresh_start_at ? new Date(adminSettings.limits.fresh_start_at).toISOString() : null;
+
+    // Deduplicate verified payments by unique payment ID (razorpay_payment_id || id)
+    const verifiedPaymentsMap = new Map<string, {
+      id: string;
+      amount_inr: number;
+      created_at: string;
+      is_test: boolean;
+      user_email?: string;
+      business_name?: string;
+    }>();
+
+    for (const p of paymentHistory) {
+      if (p.status === 'SUCCESS') {
+        const uniqueKey = p.razorpay_payment_id || p.id;
+        if (!verifiedPaymentsMap.has(uniqueKey)) {
+          const amt = typeof p.amount_inr === 'number'
+            ? p.amount_inr
+            : (typeof p.amount_cents === 'number' ? Math.round(p.amount_cents / 100) : 0);
+
+          const isTestPayment = !!p.is_test || 
+            uniqueKey.startsWith('pay_test_') || 
+            uniqueKey.startsWith('pay_http_') || 
+            uniqueKey.startsWith('pay_audit_') || 
+            uniqueKey.startsWith('pay_cross_') || 
+            uniqueKey.startsWith('pay_del_') || 
+            p.user_email === 'test@gmail.com' || 
+            p.user_email === 'owner@reviewai.com';
+
+          verifiedPaymentsMap.set(uniqueKey, {
+            id: uniqueKey,
+            amount_inr: amt,
+            created_at: p.created_at,
+            is_test: isTestPayment,
+            user_email: p.user_email,
+            business_name: p.business_name,
+          });
+        }
+      }
+    }
+
+    // Also check invoices table for any paid invoices
+    const { data: invoiceRows } = await this.supabase
+      .from('invoices')
+      .select('id, stripe_invoice_id, amount_cents, status, paid_at, created_at')
+      .eq('status', 'paid');
+
+    for (const inv of (invoiceRows || [])) {
+      const invKey = inv.stripe_invoice_id || inv.id;
+      if (!verifiedPaymentsMap.has(invKey)) {
+        verifiedPaymentsMap.set(invKey, {
+          id: invKey,
+          amount_inr: Math.round((inv.amount_cents || 0) / 100),
+          created_at: inv.paid_at || inv.created_at,
+          is_test: false,
+        });
+      }
+    }
+
+    const allVerifiedPayments = Array.from(verifiedPaymentsMap.values());
+
+    // Timezone: App configured timezone (default Asia/Kolkata, UTC+05:30)
+    const tzOffsetHours = 5.5;
+    const now = new Date();
+    const localNow = new Date(now.getTime() + tzOffsetHours * 3600 * 1000);
+    const currentYear = localNow.getUTCFullYear();
+    const currentMonth = localNow.getUTCMonth(); // 0-indexed
+
+    // Boundaries for This Month in UTC
+    const thisMonthStartUTC = new Date(Date.UTC(currentYear, currentMonth, 1, 0, 0, 0, 0) - tzOffsetHours * 3600 * 1000);
+
+    // Boundaries for Last Month in UTC
+    const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+    const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const lastMonthStartUTC = new Date(Date.UTC(lastMonthYear, lastMonth, 1, 0, 0, 0, 0) - tzOffsetHours * 3600 * 1000);
+    const lastMonthEndUTC = new Date(thisMonthStartUTC.getTime() - 1);
+
+    // Filter test data if include_test is not requested
+    const includeTest = Boolean(query?.include_test);
+    const filterPayments = (payments: typeof allVerifiedPayments) => {
+      return payments.filter(p => {
+        if (!includeTest) {
+          if (p.is_test) return false;
+          if (freshStartAt && new Date(p.created_at).getTime() < new Date(freshStartAt).getTime()) {
+            return false;
+          }
+        }
+        return true;
+      });
+    };
+
+    const eligiblePayments = filterPayments(allVerifiedPayments);
+
+    let revenueThisMonth = 0;
+    let revenueLastMonth = 0;
+
+    for (const p of eligiblePayments) {
+      const pTime = new Date(p.created_at).getTime();
+      if (pTime >= thisMonthStartUTC.getTime()) {
+        revenueThisMonth += p.amount_inr;
+      } else if (pTime >= lastMonthStartUTC.getTime() && pTime <= lastMonthEndUTC.getTime()) {
+        revenueLastMonth += p.amount_inr;
+      }
+    }
+
+    // Custom Date Range calculations
+    let rangeStartUTC: Date;
+    let rangeEndUTC: Date;
+    let formattedStartDate: string;
+    let formattedEndDate: string;
+
+    if (query?.start_date && query?.end_date) {
+      formattedStartDate = query.start_date.split('T')[0];
+      formattedEndDate = query.end_date.split('T')[0];
+      const [sYear, sMonth, sDay] = formattedStartDate.split('-').map(Number);
+      const [eYear, eMonth, eDay] = formattedEndDate.split('-').map(Number);
+
+      rangeStartUTC = new Date(Date.UTC(sYear, sMonth - 1, sDay, 0, 0, 0, 0) - tzOffsetHours * 3600 * 1000);
+      rangeEndUTC = new Date(Date.UTC(eYear, eMonth - 1, eDay, 23, 59, 59, 999) - tzOffsetHours * 3600 * 1000);
+    } else {
+      const sDay = '01';
+      const sMonthStr = String(currentMonth + 1).padStart(2, '0');
+      formattedStartDate = `${currentYear}-${sMonthStr}-${sDay}`;
+
+      const eDayStr = String(localNow.getUTCDate()).padStart(2, '0');
+      formattedEndDate = `${currentYear}-${sMonthStr}-${eDayStr}`;
+
+      rangeStartUTC = thisMonthStartUTC;
+      rangeEndUTC = new Date();
+    }
+
+    // Collect payments within selected range
+    const rangePayments = eligiblePayments.filter(p => {
+      const pTime = new Date(p.created_at).getTime();
+      return pTime >= rangeStartUTC.getTime() && pTime <= rangeEndUTC.getTime();
+    });
+
+    const totalRevenueRange = rangePayments.reduce((sum, p) => sum + p.amount_inr, 0);
+    const successfulPaymentsCount = rangePayments.length;
+
+    // Daily breakdown
+    const dailyMap = new Map<string, { revenue_inr: number; count: number }>();
+    const startIter = new Date(formattedStartDate + 'T00:00:00Z');
+    const endIter = new Date(formattedEndDate + 'T00:00:00Z');
+    const maxDays = 366;
+    let currentDayIter = new Date(startIter);
+    let dayCount = 0;
+
+    while (currentDayIter <= endIter && dayCount < maxDays) {
+      const dayKey = currentDayIter.toISOString().split('T')[0];
+      dailyMap.set(dayKey, { revenue_inr: 0, count: 0 });
+      currentDayIter.setUTCDate(currentDayIter.getUTCDate() + 1);
+      dayCount++;
+    }
+
+    const monthlyMap = new Map<string, { label: string; revenue_inr: number; count: number }>();
+
+    for (const p of rangePayments) {
+      const pLocalDate = new Date(new Date(p.created_at).getTime() + tzOffsetHours * 3600 * 1000);
+      const dayKey = pLocalDate.toISOString().split('T')[0];
+      const monthKey = dayKey.slice(0, 7);
+
+      const dEntry = dailyMap.get(dayKey);
+      if (dEntry) {
+        dEntry.revenue_inr += p.amount_inr;
+        dEntry.count += 1;
+      } else {
+        dailyMap.set(dayKey, { revenue_inr: p.amount_inr, count: 1 });
+      }
+
+      if (!monthlyMap.has(monthKey)) {
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        const [mY, mM] = monthKey.split('-').map(Number);
+        const label = `${monthNames[mM - 1]} ${mY}`;
+        monthlyMap.set(monthKey, { label, revenue_inr: 0, count: 0 });
+      }
+      const mEntry = monthlyMap.get(monthKey)!;
+      mEntry.revenue_inr += p.amount_inr;
+      mEntry.count += 1;
+    }
+
+    const dailyBreakdown = Array.from(dailyMap.entries()).map(([date, val]) => ({
+      date,
+      revenue_inr: val.revenue_inr,
+      count: val.count,
+    })).sort((a, b) => a.date.localeCompare(b.date));
+
+    const monthlyBreakdown = Array.from(monthlyMap.entries()).map(([month, val]) => ({
+      month,
+      label: val.label,
+      revenue_inr: val.revenue_inr,
+      count: val.count,
+    })).sort((a, b) => a.month.localeCompare(b.month));
+
+    const revenueAnalytics = {
+      start_date: formattedStartDate,
+      end_date: formattedEndDate,
+      total_revenue_inr: totalRevenueRange,
+      successful_payments_count: successfulPaymentsCount,
+      daily_breakdown: dailyBreakdown,
+      monthly_breakdown: monthlyBreakdown,
+      include_test: includeTest,
+    };
+
     const roundedMRR = Math.round(totalMRR);
 
     return {
@@ -1413,9 +1628,271 @@ export class AdminService {
       trialing_subscriptions: trialingUserCount,
       mrr: roundedMRR,
       arr: roundedMRR * 12,
+      revenue_this_month: revenueThisMonth,
+      revenue_last_month: revenueLastMonth,
+      revenue_analytics: revenueAnalytics,
+      fresh_start_at: freshStartAt,
       plan_distribution: Object.entries(planCounts).map(([plan, count]) => ({ plan, count })),
       status_distribution: Object.entries(statusCounts).map(([status, count]) => ({ status, count })),
       user_subscriptions: filteredUsers,
+    };
+  }
+
+  /**
+   * Get preview of test data identified for reset
+   * Distinguishes test/demo users, test businesses, test payments, and test usage counters
+   * Preserves admin accounts, real customers, plan configs, and genuine payments
+   */
+  async getTestDataResetPreview(): Promise<import('./types').TestDataResetPreview> {
+    // 1. Fetch users
+    const { data: usersData } = await this.supabase
+      .from('users')
+      .select('id, full_name, email, role, created_at')
+      .is('deleted_at', null);
+
+    const allUsers = usersData || [];
+    const adminUsers = allUsers.filter(u => u.role === 'admin');
+    
+    // Test users: strictly non-admin accounts that match test email / test name patterns
+    const testUsers = allUsers.filter(u => {
+      if (u.role === 'admin') return false;
+      const email = (u.email || '').toLowerCase();
+      const name = (u.full_name || '').toLowerCase();
+      return (
+        email === 'owner@reviewai.com' ||
+        email === 'test@gmail.com' ||
+        email === 'durgesh_test@gmail.com' ||
+        email.startsWith('test_') ||
+        email.includes('+test') ||
+        name === 'test business owner' ||
+        name === 'test'
+      );
+    });
+
+    const testUserIds = new Set(testUsers.map(u => u.id));
+
+    // 2. Fetch businesses
+    const { data: businessesData } = await this.supabase
+      .from('businesses')
+      .select('id, name, slug, owner_id, status, created_at')
+      .is('deleted_at', null);
+
+    const allBusinesses = businessesData || [];
+    const testBusinesses = allBusinesses.filter(b => {
+      const name = (b.name || '').toLowerCase();
+      const isOwnerTest = testUserIds.has(b.owner_id);
+      return (
+        isOwnerTest ||
+        name.includes('test') ||
+        name.includes('audit') ||
+        name.startsWith('new biz') ||
+        name.startsWith('paid biz') ||
+        name.includes('client 179')
+      );
+    });
+
+    const testBusinessIds = new Set(testBusinesses.map(b => b.id));
+
+    // 3. Fetch usage counters for test businesses
+    let testScansCount = 0;
+    let testSessionsCount = 0;
+
+    if (testBusinessIds.size > 0) {
+      const bIdList = Array.from(testBusinessIds);
+      const { count: sCount } = await this.supabase
+        .from('scan_logs')
+        .select('*', { count: 'exact', head: true })
+        .in('business_id', bIdList);
+      testScansCount = sCount || 0;
+
+      const { count: rCount } = await this.supabase
+        .from('review_sessions')
+        .select('*', { count: 'exact', head: true })
+        .in('business_id', bIdList);
+      testSessionsCount = rCount || 0;
+    }
+
+    // 4. Fetch payment records
+    const { data: adminSettings } = await this.supabase
+      .from('admin_settings')
+      .select('limits')
+      .limit(1)
+      .maybeSingle();
+
+    const paymentHistory: any[] = Array.isArray(adminSettings?.limits?.payment_history)
+      ? adminSettings.limits.payment_history
+      : [];
+    const freshStartAt = adminSettings?.limits?.fresh_start_at ? new Date(adminSettings.limits.fresh_start_at).toISOString() : null;
+
+    const testPayments: any[] = [];
+    const genuinePayments: any[] = [];
+    const ambiguousRecords: any[] = [];
+
+    for (const p of paymentHistory) {
+      const pId = p.razorpay_payment_id || p.id;
+      const isSynthetic = (
+        pId.startsWith('pay_test_') ||
+        pId.startsWith('pay_http_') ||
+        pId.startsWith('pay_audit_') ||
+        pId.startsWith('pay_cross_') ||
+        pId.startsWith('pay_del_') ||
+        p.razorpay_order_id?.startsWith('order_test_') ||
+        p.razorpay_order_id?.startsWith('order_del_') ||
+        p.razorpay_order_id?.startsWith('order_1791')
+      );
+
+      const isTestUser = p.user_email === 'test@gmail.com' || p.user_email === 'owner@reviewai.com';
+      const isTestBiz = p.business_name && (p.business_name.toLowerCase().includes('test') || p.business_name.toLowerCase().includes('audit') || p.business_name.toLowerCase().includes('client 179'));
+
+      if (isSynthetic || isTestUser || isTestBiz || p.is_test) {
+        testPayments.push({
+          id: p.id,
+          user_email: p.user_email,
+          business_name: p.business_name,
+          amount_inr: p.amount_inr || Math.round((p.amount_cents || 0) / 100),
+          status: p.status,
+          created_at: p.created_at,
+          razorpay_payment_id: p.razorpay_payment_id,
+          is_synthetic: isSynthetic,
+        });
+      } else {
+        genuinePayments.push(p);
+      }
+    }
+
+    // 5. Preserved configurations (plans, pricing)
+    const allPlans = await planConfigService.getPlans(true);
+    let pricingVersionsCount = 0;
+    for (const plan of allPlans) {
+      pricingVersionsCount += (plan.versions?.length || 0);
+    }
+
+    const genuineUsers = allUsers.filter(u => u.role !== 'admin' && !testUserIds.has(u.id));
+
+    return {
+      test_users: testUsers.map(u => ({
+        id: u.id,
+        email: u.email,
+        name: u.full_name,
+        role: u.role,
+        created_at: u.created_at,
+      })),
+      test_businesses: testBusinesses.map(b => ({
+        id: b.id,
+        name: b.name,
+        slug: b.slug,
+        owner_id: b.owner_id,
+        status: b.status,
+        created_at: b.created_at,
+      })),
+      test_payments: testPayments,
+      test_usage_counters: {
+        scan_logs_count: testScansCount,
+        review_sessions_count: testSessionsCount,
+        test_businesses_count: testBusinesses.length,
+      },
+      preserved_records: {
+        admin_users_count: adminUsers.length,
+        genuine_users_count: genuineUsers.length,
+        plans_count: allPlans.length,
+        pricing_versions_count: pricingVersionsCount,
+        genuine_payments_count: genuinePayments.length,
+      },
+      ambiguous_records: ambiguousRecords,
+      fresh_start_at: freshStartAt,
+      is_fresh_start_active: !!freshStartAt,
+    };
+  }
+
+  /**
+   * Execute test data reset with safety confirmation
+   * - Sets fresh_start_at baseline so analytics starts cleanly at ₹0
+   * - Marks test transactions with is_test: true (preserving all financial audit logs)
+   * - Resets usage counters on test businesses
+   * - Preserves admin accounts, plans, pricing, trial config, genuine accounts
+   */
+  async executeTestDataReset(
+    adminUserId: string,
+    options: import('./types').TestDataResetConfirm
+  ): Promise<{ success: boolean; message: string; summary: any }> {
+    if (!options.confirm) {
+      throw new ValidationError('Explicit admin confirmation is required to execute test data reset.');
+    }
+
+    const preview = await this.getTestDataResetPreview();
+    const freshStartTimestamp = new Date().toISOString();
+
+    // 1. Update admin_settings to establish fresh_start_at baseline and mark test payments
+    const { data: settings } = await this.supabase
+      .from('admin_settings')
+      .select('id, limits')
+      .limit(1)
+      .maybeSingle();
+
+    const limits = settings?.limits || {};
+    const history: any[] = Array.isArray(limits.payment_history) ? [...limits.payment_history] : [];
+    const testPaymentIds = new Set(preview.test_payments.map(p => p.id));
+
+    if (options.mark_test_payments) {
+      for (const p of history) {
+        if (testPaymentIds.has(p.id)) {
+          p.is_test = true;
+        }
+      }
+      limits.payment_history = history;
+    }
+
+    if (options.set_fresh_start_baseline) {
+      limits.fresh_start_at = freshStartTimestamp;
+    }
+
+    if (settings?.id) {
+      await this.supabase
+        .from('admin_settings')
+        .update({ limits, updated_at: freshStartTimestamp })
+        .eq('id', settings.id);
+    }
+
+    // 2. Reset test usage counters on test businesses if requested
+    let resetBusinessesCount = 0;
+    if (options.reset_usage_counters && preview.test_businesses.length > 0) {
+      const testBizIds = preview.test_businesses.map(b => b.id);
+      
+      const { data: testSubs } = await this.supabase
+        .from('subscriptions')
+        .select('id, metadata')
+        .in('business_id', testBizIds);
+
+      for (const sub of (testSubs || [])) {
+        const meta = sub.metadata || {};
+        meta.used_qr_quota = 0;
+        meta.used_ai_quota = 0;
+        meta.current_month_qr_used = 0;
+        meta.current_month_ai_used = 0;
+        await this.supabase
+          .from('subscriptions')
+          .update({ metadata: meta, updated_at: freshStartTimestamp })
+          .eq('id', sub.id);
+        resetBusinessesCount++;
+      }
+    }
+
+    logger.info(
+      { adminUserId, freshStartTimestamp, testPaymentsCount: preview.test_payments.length, resetBusinessesCount },
+      'Test data reset executed and fresh start baseline established'
+    );
+
+    return {
+      success: true,
+      message: 'Fresh start baseline established and test data reset successfully.',
+      summary: {
+        fresh_start_at: freshStartTimestamp,
+        test_payments_marked: preview.test_payments.length,
+        test_businesses_reset: resetBusinessesCount,
+        preserved_admins: preview.preserved_records.admin_users_count,
+        preserved_customers: preview.preserved_records.genuine_users_count,
+        preserved_plans: preview.preserved_records.plans_count,
+      },
     };
   }
 

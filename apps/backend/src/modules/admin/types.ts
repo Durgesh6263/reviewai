@@ -360,8 +360,37 @@ export const AdminSubscriptionStatsQuerySchema = z.object({
   search: z.string().optional(),
   plan: z.string().optional(),
   status: z.string().optional(),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+  include_test: z.coerce.boolean().optional(),
 });
 export type AdminSubscriptionStatsQuery = z.infer<typeof AdminSubscriptionStatsQuerySchema>;
+
+export const DailyRevenueBreakdownSchema = z.object({
+  date: z.string(),
+  revenue_inr: z.number(),
+  count: z.number(),
+});
+export type DailyRevenueBreakdown = z.infer<typeof DailyRevenueBreakdownSchema>;
+
+export const MonthlyRevenueBreakdownSchema = z.object({
+  month: z.string(),
+  label: z.string(),
+  revenue_inr: z.number(),
+  count: z.number(),
+});
+export type MonthlyRevenueBreakdown = z.infer<typeof MonthlyRevenueBreakdownSchema>;
+
+export const RevenueAnalyticsSchema = z.object({
+  start_date: z.string(),
+  end_date: z.string(),
+  total_revenue_inr: z.number(),
+  successful_payments_count: z.number(),
+  daily_breakdown: z.array(DailyRevenueBreakdownSchema),
+  monthly_breakdown: z.array(MonthlyRevenueBreakdownSchema),
+  include_test: z.boolean(),
+});
+export type RevenueAnalytics = z.infer<typeof RevenueAnalyticsSchema>;
 
 export const AdminSubscriptionStatsSchema = z.object({
   total_subscriptions: z.number(),
@@ -371,6 +400,10 @@ export const AdminSubscriptionStatsSchema = z.object({
   trialing_subscriptions: z.number(),
   mrr: z.number(),
   arr: z.number(),
+  revenue_this_month: z.number(),
+  revenue_last_month: z.number(),
+  revenue_analytics: RevenueAnalyticsSchema.optional(),
+  fresh_start_at: z.string().nullable().optional(),
   plan_distribution: z.array(z.object({
     plan: z.string(),
     count: z.number(),
@@ -381,6 +414,63 @@ export const AdminSubscriptionStatsSchema = z.object({
   })),
   user_subscriptions: z.array(AdminUserSubscriptionUsageSchema).optional(),
 });
+
+export const TestDataResetConfirmSchema = z.object({
+  confirm: z.boolean(),
+  reset_usage_counters: z.boolean().optional().default(true),
+  mark_test_payments: z.boolean().optional().default(true),
+  set_fresh_start_baseline: z.boolean().optional().default(true),
+});
+export type TestDataResetConfirm = z.infer<typeof TestDataResetConfirmSchema>;
+
+export const TestDataResetPreviewSchema = z.object({
+  test_users: z.array(z.object({
+    id: z.string(),
+    email: z.string(),
+    name: z.string().optional(),
+    role: z.string(),
+    created_at: z.string().optional(),
+  })),
+  test_businesses: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    owner_id: z.string(),
+    status: z.string(),
+    created_at: z.string().optional(),
+  })),
+  test_payments: z.array(z.object({
+    id: z.string(),
+    user_email: z.string().optional(),
+    business_name: z.string().optional(),
+    amount_inr: z.number(),
+    status: z.string(),
+    created_at: z.string(),
+    razorpay_payment_id: z.string().optional(),
+    is_synthetic: z.boolean().optional(),
+  })),
+  test_usage_counters: z.object({
+    scan_logs_count: z.number(),
+    review_sessions_count: z.number(),
+    test_businesses_count: z.number(),
+  }),
+  preserved_records: z.object({
+    admin_users_count: z.number(),
+    genuine_users_count: z.number(),
+    plans_count: z.number(),
+    pricing_versions_count: z.number(),
+    genuine_payments_count: z.number(),
+  }),
+  ambiguous_records: z.array(z.object({
+    type: z.string(),
+    id: z.string(),
+    identifier: z.string(),
+    reason: z.string(),
+  })),
+  fresh_start_at: z.string().nullable(),
+  is_fresh_start_active: z.boolean(),
+});
+export type TestDataResetPreview = z.infer<typeof TestDataResetPreviewSchema>;
 
 export type AdminSubscription = z.infer<typeof AdminSubscriptionSchema>;
 export type AdminSubscriptionListQuery = z.infer<typeof AdminSubscriptionListQuerySchema>;
