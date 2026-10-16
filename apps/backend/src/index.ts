@@ -32,6 +32,7 @@ import adminRoutes from './modules/admin/routes';
 import { createPrivacyRoutes } from './modules/privacy/routes';
 import { createOnboardingRoutes } from './modules/onboarding/routes';
 import { createCustomerRoutes } from './modules/customer/routes';
+import { handleCreateRazorpayOrder, handleVerifyRazorpayPayment } from './modules/payment/standard-checkout';
 
 // Import module controllers/services
 import { AuthController } from './modules/auth/controller';
@@ -422,6 +423,12 @@ app.use(`${API_PREFIX}/auth`, createAuthRoutes(authController, authMiddlewareIns
 // Review routes (public customer flow + protected for business)
 app.use(`${API_PREFIX}/review`, createReviewRoutes(reviewController, authMiddlewareInstance));
 app.use(`${API_PREFIX}`, createReviewRoutes(reviewController, authMiddlewareInstance));
+
+// Razorpay Standard Web Checkout endpoints
+app.post('/api/create-order', handleCreateRazorpayOrder);
+app.post(`${API_PREFIX}/create-order`, handleCreateRazorpayOrder);
+app.post('/api/verify-payment', handleVerifyRazorpayPayment);
+app.post(`${API_PREFIX}/verify-payment`, handleVerifyRazorpayPayment);
 
 // Razorpay Payment endpoints
 app.post(`${API_PREFIX}/payments/razorpay/order`, authMiddlewareInstance.authenticate, subscriptionController.createRazorpayOrder);

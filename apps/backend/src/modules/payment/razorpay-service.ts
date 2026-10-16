@@ -86,15 +86,15 @@ export class RazorpayService {
   }
 
   get keyId(): string {
-    return process.env.RAZORPAY_KEY_ID || this._keyId || 'rzp_test_TlEX9SgJLgWuWC';
+    return process.env.RAZORPAY_KEY_ID || this._keyId || '';
   }
 
   get keySecret(): string {
-    return process.env.RAZORPAY_KEY_SECRET || this._keySecret || 'aPma1OvKUzwxLL99M9NABte3';
+    return process.env.RAZORPAY_KEY_SECRET || this._keySecret || '';
   }
 
   get webhookSecret(): string {
-    return process.env.RAZORPAY_WEBHOOK_SECRET || this._webhookSecret || 'rzp_whsec_reviewai_dev_123';
+    return process.env.RAZORPAY_WEBHOOK_SECRET || this._webhookSecret || '';
   }
 
   getPublicKey(): string {
