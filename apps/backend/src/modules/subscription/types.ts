@@ -140,8 +140,8 @@ export const SUBSCRIPTION_CONSTANTS = {
     },
     starter: {
       name: 'Starter',
-      price_monthly: 2900, // $29.00 in cents
-      price_yearly: 29000, // $290.00 in cents (2 months free)
+      price_monthly: 49900, // ₹499.00 in paise
+      price_yearly: 478800, // ₹4788.00 in paise (₹399/mo)
       limits: {
         review_generations: 500,
         google_redirects: 500,
@@ -156,8 +156,8 @@ export const SUBSCRIPTION_CONSTANTS = {
     },
     professional: {
       name: 'Professional',
-      price_monthly: 7900, // $79.00 in cents
-      price_yearly: 79000, // $790.00 in cents (2 months free)
+      price_monthly: 149900, // ₹1499.00 in paise
+      price_yearly: 1438800, // ₹14388.00 in paise (₹1199/mo)
       limits: {
         review_generations: 2000,
         google_redirects: 2000,
@@ -172,8 +172,8 @@ export const SUBSCRIPTION_CONSTANTS = {
     },
     enterprise: {
       name: 'Enterprise',
-      price_monthly: 19900, // $199.00 in cents
-      price_yearly: 199000, // $1990.00 in cents (2 months free)
+      price_monthly: 499900, // ₹4999.00 in paise
+      price_yearly: 4798800, // ₹47988.00 in paise (₹3999/mo)
       limits: {
         review_generations: null, // unlimited
         google_redirects: null,

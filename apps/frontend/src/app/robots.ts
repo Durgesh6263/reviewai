@@ -1,7 +1,8 @@
 import type { MetadataRoute } from 'next';
+import { getCanonicalSiteUrl } from '@/lib/public-url';
 
 export default function robots(): MetadataRoute.Robots {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || 'https://reviewai.com';
+  const baseUrl = getCanonicalSiteUrl();
 
   return {
     rules: [
@@ -11,6 +12,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: ['/r/', '/dashboard/', '/admin/', '/api/'],
       },
     ],
-    sitemap: `${baseUrl.replace(/\/$/, '')}/sitemap.xml`,
+    sitemap: `${baseUrl}/sitemap.xml`,
   };
 }

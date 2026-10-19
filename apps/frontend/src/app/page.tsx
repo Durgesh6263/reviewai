@@ -36,6 +36,9 @@ export const metadata: Metadata = {
     'review management',
     'ReviewAI',
   ],
+  alternates: {
+    canonical: '/',
+  },
   openGraph: {
     title: 'ReviewAI — AI-Assisted Customer Review Collection',
     description:

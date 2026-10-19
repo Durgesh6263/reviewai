@@ -4,15 +4,37 @@
  * https://<domain>/r/{qr-slug}
  */
 
+export const PRODUCTION_DOMAIN = 'https://www.review-pilot.store';
+
+/**
+ * Returns the authoritative canonical production URL for SEO, sitemaps, robots.txt, and metadata.
+ * Always resolves to 'https://www.review-pilot.store' and ensures no legacy Vercel preview domains,
+ * placeholders, or localhost URLs are exposed to search engines.
+ */
+export function getCanonicalSiteUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL;
+  if (
+    envUrl &&
+    envUrl.trim() !== '' &&
+    !envUrl.includes('vercel.app') &&
+    !envUrl.includes('reviewai.com') &&
+    !envUrl.includes('localhost') &&
+    !envUrl.includes('127.0.0.1')
+  ) {
+    return envUrl.trim().replace(/\/$/, '');
+  }
+  return PRODUCTION_DOMAIN;
+}
+
 export function getPublicBaseUrl(): string {
-  // 1. If running in browser, prioritize the actual active host origin (e.g. reviewai-flame-pi.vercel.app or custom domain)
+  // 1. If running in browser, prioritize the actual active host origin (e.g. www.review-pilot.store)
   if (typeof window !== 'undefined' && window.location?.origin && !window.location.origin.includes('localhost') && !window.location.origin.includes('127.0.0.1')) {
     return window.location.origin.replace(/\/$/, '');
   }
 
   // 2. If explicit production app URL is set, use canonical domain
   const envUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL;
-  if (envUrl && envUrl.trim() !== '' && !envUrl.includes('reviewai-frontend.vercel.app')) {
+  if (envUrl && envUrl.trim() !== '' && !envUrl.includes('vercel.app') && !envUrl.includes('reviewai.com')) {
     return envUrl.trim().replace(/\/$/, '');
   }
 
@@ -21,8 +43,8 @@ export function getPublicBaseUrl(): string {
     return window.location.origin.replace(/\/$/, '');
   }
 
-  // 4. Fallback URL
-  return 'http://localhost:3000';
+  // 4. Default to canonical production domain
+  return PRODUCTION_DOMAIN;
 }
 
 export const getPublicAppUrl = getPublicBaseUrl;

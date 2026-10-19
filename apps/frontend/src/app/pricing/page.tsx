@@ -126,11 +126,11 @@ export default function PricingPage() {
     }
     const prices: Record<string, { monthly: number; yearly: number }> = {
       free: { monthly: 0, yearly: 0 },
-      starter: { monthly: 29, yearly: 24 },
+      starter: { monthly: 499, yearly: 399 },
       base: { monthly: 499, yearly: 399 },
-      pro: { monthly: 79, yearly: 65 },
-      unlimited: { monthly: 1499, yearly: 1199 },
-      enterprise: { monthly: 199, yearly: 165 },
+      pro: { monthly: 1499, yearly: 1199 },
+      unlimited: { monthly: 2999, yearly: 2399 },
+      enterprise: { monthly: 4999, yearly: 3999 },
     };
     return prices[plan.slug] || { monthly: 0, yearly: 0 };
   };

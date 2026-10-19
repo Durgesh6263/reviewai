@@ -4,10 +4,14 @@ import './globals.css';
 import { Providers } from './providers';
 import { Toaster } from 'react-hot-toast';
 
+import { getCanonicalSiteUrl } from '@/lib/public-url';
+
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
 
+const canonicalBaseUrl = getCanonicalSiteUrl();
+
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || 'https://reviewai.com'),
+  metadataBase: new URL(canonicalBaseUrl),
   title: 'ReviewAI - Collect Authentic Google Reviews',
   description: 'AI-powered QR code flows to help businesses collect authentic Google reviews effortlessly.',
   keywords: ['reviews', 'google reviews', 'QR code', 'AI', 'reputation management', 'customer feedback'],
@@ -15,10 +19,13 @@ export const metadata: Metadata = {
   creator: 'ReviewAI',
   publisher: 'ReviewAI',
   robots: 'index, follow',
+  alternates: {
+    canonical: '/',
+  },
   openGraph: {
     type: 'website',
     locale: 'en_US',
-    url: process.env.NEXT_PUBLIC_APP_URL || '/',
+    url: canonicalBaseUrl,
     siteName: 'ReviewAI',
     title: 'ReviewAI - Collect Authentic Google Reviews',
     description: 'AI-powered QR code flows to help businesses collect authentic Google reviews effortlessly.',

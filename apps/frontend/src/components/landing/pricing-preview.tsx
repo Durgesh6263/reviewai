@@ -31,7 +31,7 @@ export function LandingPricingPreview() {
       name: 'Starter',
       slug: 'starter',
       description: 'For growing local businesses looking to build strong review momentum.',
-      price: { monthly: 29, yearly: 24 },
+      price: { monthly: 499, yearly: 399 },
       badge: 'Most Popular',
       popular: true,
       features: [
@@ -50,7 +50,7 @@ export function LandingPricingPreview() {
       name: 'Pro',
       slug: 'pro',
       description: 'For busy high-volume locations that need maximum review flow.',
-      price: { monthly: 79, yearly: 64 },
+      price: { monthly: 1499, yearly: 1199 },
       badge: 'Best for Scale',
       popular: false,
       features: [
@@ -69,7 +69,7 @@ export function LandingPricingPreview() {
       name: 'Enterprise',
       slug: 'enterprise',
       description: 'For multi-location franchises, fitness chains, and restaurant groups.',
-      price: { monthly: 199, yearly: 159 },
+      price: { monthly: 4999, yearly: 3999 },
       badge: 'Multi-Location',
       popular: false,
       features: [
@@ -166,12 +166,12 @@ export function LandingPricingPreview() {
                   {/* Price */}
                   <div className="mb-6 pb-6 border-b border-slate-800">
                     <div className="flex items-baseline gap-1">
-                      <span className="text-4xl font-extrabold text-white">${currentPrice}</span>
+                      <span className="text-4xl font-extrabold text-white">₹{currentPrice.toLocaleString('en-IN')}</span>
                       <span className="text-xs text-slate-400">/ month</span>
                     </div>
                     {billingPeriod === 'yearly' && plan.price.monthly > 0 && (
                       <span className="text-[11px] text-emerald-400 block mt-1">
-                        Billed annually (${currentPrice * 12}/yr)
+                        Billed annually (₹{(currentPrice * 12).toLocaleString('en-IN')}/yr)
                       </span>
                     )}
                   </div>
