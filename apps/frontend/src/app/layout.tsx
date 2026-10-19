@@ -12,13 +12,35 @@ const canonicalBaseUrl = getCanonicalSiteUrl();
 
 export const metadata: Metadata = {
   metadataBase: new URL(canonicalBaseUrl),
-  title: 'ReviewAI - Collect Authentic Google Reviews',
-  description: 'AI-powered QR code flows to help businesses collect authentic Google reviews effortlessly.',
-  keywords: ['reviews', 'google reviews', 'QR code', 'AI', 'reputation management', 'customer feedback'],
+  title: {
+    default: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
+    template: '%s | ReviewAI',
+  },
+  description:
+    'Collect authentic Google reviews in-person with ReviewAI. Customers scan your custom QR code, share feedback, and AI crafts natural, customer-controlled review drafts.',
+  keywords: [
+    'Google review collection',
+    'QR code review system',
+    'customer feedback QR',
+    'AI review assistant',
+    'in-person customer reviews',
+    'business review management',
+    'authentic Google reviews',
+  ],
   authors: [{ name: 'ReviewAI' }],
   creator: 'ReviewAI',
   publisher: 'ReviewAI',
-  robots: 'index, follow',
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-video-preview': -1,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+    },
+  },
   alternates: {
     canonical: '/',
   },
@@ -27,21 +49,23 @@ export const metadata: Metadata = {
     locale: 'en_US',
     url: canonicalBaseUrl,
     siteName: 'ReviewAI',
-    title: 'ReviewAI - Collect Authentic Google Reviews',
-    description: 'AI-powered QR code flows to help businesses collect authentic Google reviews effortlessly.',
+    title: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
+    description:
+      'Collect authentic Google reviews in-person with ReviewAI. Customers scan your custom QR code, share feedback, and AI crafts natural, customer-controlled review drafts.',
     images: [
       {
         url: '/og-image.png',
         width: 1200,
         height: 630,
-        alt: 'ReviewAI Dashboard',
+        alt: 'ReviewAI — Turn Real Customer Experiences Into Better Google Reviews',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'ReviewAI - Collect Authentic Google Reviews',
-    description: 'AI-powered QR code flows to help businesses collect authentic Google reviews effortlessly.',
+    title: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
+    description:
+      'Collect authentic Google reviews in-person with ReviewAI. Customers scan your custom QR code, share feedback, and AI crafts natural, customer-controlled review drafts.',
     images: ['/og-image.png'],
   },
   verification: {

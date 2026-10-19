@@ -22,9 +22,9 @@ import { LandingFinalCTA } from '@/components/landing/final-cta';
 import { LandingFooter } from '@/components/landing/footer';
 
 export const metadata: Metadata = {
-  title: 'ReviewAI — AI-Assisted Customer Review Collection',
+  title: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
   description:
-    'ReviewAI helps businesses collect genuine customer feedback through QR codes and turn customer-provided input into editable AI-assisted review drafts.',
+    'Empower your customers to turn genuine in-person experiences into authentic Google reviews with custom QR codes and smart, editable AI draft assistance.',
   keywords: [
     'AI review assistant',
     'QR review system',
@@ -40,17 +40,26 @@ export const metadata: Metadata = {
     canonical: '/',
   },
   openGraph: {
-    title: 'ReviewAI — AI-Assisted Customer Review Collection',
+    title: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
     description:
-      'ReviewAI helps businesses collect genuine customer feedback through QR codes and turn customer-provided input into editable AI-assisted review drafts.',
+      'Empower your customers to turn genuine in-person experiences into authentic Google reviews with custom QR codes and smart, editable AI draft assistance.',
     type: 'website',
     url: '/',
+    images: [
+      {
+        url: '/og-image.png',
+        width: 1200,
+        height: 630,
+        alt: 'ReviewAI — Turn Real Customer Experiences Into Better Google Reviews',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'ReviewAI — AI-Assisted Customer Review Collection',
+    title: 'ReviewAI — AI-Assisted Google Review Collection & QR Feedback Platform',
     description:
-      'ReviewAI helps businesses collect genuine customer feedback through QR codes and turn customer-provided input into editable AI-assisted review drafts.',
+      'Empower your customers to turn genuine in-person experiences into authentic Google reviews with custom QR codes and smart, editable AI draft assistance.',
+    images: ['/og-image.png'],
   },
 };
 
@@ -59,14 +68,47 @@ export default function LandingPage() {
     '@context': 'https://schema.org',
     '@type': 'SoftwareApplication',
     name: 'ReviewAI',
+    url: 'https://www.review-pilot.store',
     applicationCategory: 'BusinessApplication',
     operatingSystem: 'Web',
     description:
-      'ReviewAI helps businesses collect genuine customer feedback through QR codes and turn customer-provided input into editable AI-assisted review drafts.',
+      'ReviewAI helps businesses collect authentic customer reviews through QR codes and turn customer-provided feedback into natural, editable AI-assisted review drafts.',
     offers: {
-      '@type': 'Offer',
-      price: '0.00',
+      '@type': 'AggregateOffer',
       priceCurrency: 'INR',
+      lowPrice: '0',
+      highPrice: '4999',
+      offerCount: '4',
+      offers: [
+        {
+          '@type': 'Offer',
+          name: 'Free Plan',
+          price: '0',
+          priceCurrency: 'INR',
+          description: '50 QR Scans / month, 20 AI Review Generations, 1 High-Resolution QR Code.',
+        },
+        {
+          '@type': 'Offer',
+          name: 'Starter Plan',
+          price: '499',
+          priceCurrency: 'INR',
+          description: '500 QR Scans / month, 250 AI Review Generations, 3 Custom Location QR Codes.',
+        },
+        {
+          '@type': 'Offer',
+          name: 'Pro Plan',
+          price: '1499',
+          priceCurrency: 'INR',
+          description: '2,500 QR Scans / month, 1,500 AI Review Generations, 10 Branded QR Codes & Frames.',
+        },
+        {
+          '@type': 'Offer',
+          name: 'Enterprise Plan',
+          price: '4999',
+          priceCurrency: 'INR',
+          description: 'Unlimited QR Scans, Unlimited AI Generations, Custom Domain Setup, API Access.',
+        },
+      ],
     },
     featureList: [
       'QR-based customer review collection',

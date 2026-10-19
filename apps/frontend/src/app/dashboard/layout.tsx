@@ -169,6 +169,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen bg-secondary-50 dark:bg-secondary-950">
+      <head>
+        <meta name="robots" content="noindex, nofollow" />
+      </head>
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div

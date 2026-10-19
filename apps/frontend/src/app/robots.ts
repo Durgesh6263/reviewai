@@ -9,7 +9,15 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: '*',
         allow: ['/', '/pricing', '/login', '/register', '/verify-email'],
-        disallow: ['/r/', '/dashboard/', '/admin/', '/api/'],
+        disallow: [
+          '/r/',
+          '/dashboard/',
+          '/admin/',
+          '/api/',
+          '/checkout/',
+          '/onboarding/',
+          '/reset-password/',
+        ],
       },
     ],
     sitemap: `${baseUrl}/sitemap.xml`,

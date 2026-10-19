@@ -205,6 +205,17 @@ export function LandingPricingPreview() {
           })}
         </div>
 
+        {/* Full Plan Comparison Link */}
+        <div className="mt-12 text-center">
+          <Link
+            href="/pricing"
+            className="inline-flex items-center gap-2 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <span>Compare all plan quotas and details on the full pricing page</span>
+            <ArrowRight className="w-4 h-4" />
+          </Link>
+        </div>
+
       </div>
     </section>
   );
