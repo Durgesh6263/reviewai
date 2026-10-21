@@ -142,7 +142,7 @@ export function LandingHero() {
                   <div className="absolute top-2 right-2 text-[10px] font-mono text-amber-400 bg-amber-950/60 border border-amber-800/40 px-2 py-0.5 rounded-full">
                     Step 01
                   </div>
-                  <h4 className="text-sm font-semibold text-white mb-1">Unique Business QR</h4>
+                  <p className="text-sm font-semibold text-white mb-1">Unique Business QR</p>
                   <p className="text-xs text-slate-400 text-center mb-4">Customer scans with native phone camera.</p>
                   
                   {/* QR Card with laser beam scan effect */}
@@ -200,6 +200,7 @@ export function LandingHero() {
                         <button
                           key={star}
                           onClick={() => setSelectedRating(star)}
+                          aria-label={`Rate ${star} out of 5 stars`}
                           className={`p-1.5 rounded-lg transition-transform hover:scale-110 ${
                             star <= selectedRating ? 'text-amber-400' : 'text-slate-700'
                           }`}

@@ -57,7 +57,7 @@ export function LandingProblem() {
               >
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <span className="text-3xl font-mono font-black text-slate-700 group-hover:text-slate-500 transition-colors">
+                    <span className="text-3xl font-mono font-black text-slate-400 group-hover:text-slate-200 transition-colors">
                       {item.num}
                     </span>
                     <div className={`p-2 rounded-xl border ${item.color}`}>

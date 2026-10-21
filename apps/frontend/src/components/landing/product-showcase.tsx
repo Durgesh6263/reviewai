@@ -86,7 +86,7 @@ export function LandingProductShowcase() {
                     <div className={`p-2.5 rounded-xl border ${card.color}`}>
                       <Icon className="w-5 h-5" />
                     </div>
-                    <span className="text-[11px] font-mono text-slate-500 bg-slate-900 px-2.5 py-0.5 rounded-full border border-slate-800">
+                    <span className="text-[11px] font-mono text-slate-300 bg-slate-900 px-2.5 py-0.5 rounded-full border border-slate-800">
                       {card.sampleValue}
                     </span>
                   </div>

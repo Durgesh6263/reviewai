@@ -95,7 +95,7 @@ export function LandingHowItWorks() {
               >
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <span className="text-2xl font-mono font-bold text-slate-600 group-hover:text-blue-400 transition-colors">
+                    <span className="text-2xl font-mono font-bold text-slate-400 group-hover:text-blue-400 transition-colors">
                       STEP {item.step}
                     </span>
                     <div className={`p-2.5 rounded-xl border ${item.color}`}>
@@ -121,7 +121,7 @@ export function LandingHowItWorks() {
               >
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <span className="text-2xl font-mono font-bold text-slate-600 group-hover:text-amber-400 transition-colors">
+                    <span className="text-2xl font-mono font-bold text-slate-400 group-hover:text-amber-400 transition-colors">
                       STEP {item.step}
                     </span>
                     <div className={`p-2.5 rounded-xl border ${item.color}`}>

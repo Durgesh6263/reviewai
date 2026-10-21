@@ -10,16 +10,19 @@ export const metadata: Metadata = {
   description:
     'Explore ReviewAI pricing plans starting from Free (₹0) to Enterprise (₹4,999/mo). Compare monthly and annual billing options with AI review generation and QR quotas.',
   alternates: {
-    canonical: '/pricing',
+    canonical: 'https://www.review-pilot.store/pricing',
   },
   openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    siteName: 'ReviewAI',
     title: 'Transparent Plans & Pricing — ReviewAI',
     description:
       'Explore ReviewAI pricing plans starting from Free (₹0) to Enterprise (₹4,999/mo). Compare monthly and annual billing options with AI review generation and QR quotas.',
-    url: '/pricing',
+    url: 'https://www.review-pilot.store/pricing',
     images: [
       {
-        url: '/og-image.png',
+        url: 'https://www.review-pilot.store/og-image.png',
         width: 1200,
         height: 630,
         alt: 'ReviewAI Pricing Plans & Subscription Options',
@@ -31,7 +34,7 @@ export const metadata: Metadata = {
     title: 'Transparent Plans & Pricing — ReviewAI',
     description:
       'Explore ReviewAI pricing plans starting from Free (₹0) to Enterprise (₹4,999/mo). Compare monthly and annual billing options with AI review generation and QR quotas.',
-    images: ['/og-image.png'],
+    images: ['https://www.review-pilot.store/og-image.png'],
   },
 };
 

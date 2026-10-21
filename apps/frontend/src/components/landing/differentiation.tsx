@@ -45,7 +45,7 @@ export function LandingDifferentiation() {
                   className={`w-full lg:w-48 p-4 rounded-2xl bg-gradient-to-b ${item.color} border text-center shadow-lg hover:-translate-y-1 transition-all duration-300`}
                 >
                   <span className="text-xs font-mono text-slate-400 block mb-1">Input 0{idx + 1}</span>
-                  <h4 className="text-sm font-bold text-white mb-0.5">{item.title}</h4>
+                  <h3 className="text-sm font-bold text-white mb-0.5">{item.title}</h3>
                   <p className="text-[11px] text-slate-300">{item.desc}</p>
                 </div>
                 {idx < formulaElements.length - 1 && (
@@ -67,9 +67,9 @@ export function LandingDifferentiation() {
               <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 uppercase tracking-wide mb-1">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Customer Approved
               </div>
-              <h4 className="text-base font-extrabold text-white mb-1">
+              <h3 className="text-base font-extrabold text-white mb-1">
                 Editable customer-approved draft
-              </h4>
+              </h3>
               <p className="text-[11px] text-slate-300">
                 Customer copies & manually submits to Google
               </p>

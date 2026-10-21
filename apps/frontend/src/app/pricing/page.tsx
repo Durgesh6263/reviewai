@@ -192,7 +192,7 @@ export default function PricingPage() {
 
           {/* Billing Toggle */}
           <div className="inline-flex items-center gap-4 p-1 bg-secondary-100 dark:bg-secondary-800 rounded-lg">
-            <span className={cn('text-sm font-medium', billingPeriod === 'monthly' ? 'text-secondary-900 dark:text-white' : 'text-secondary-500')}>
+            <span className={cn('text-sm font-medium', billingPeriod === 'monthly' ? 'text-secondary-900 dark:text-white' : 'text-secondary-600 dark:text-secondary-300')}>
               Monthly
             </span>
             <button
@@ -203,6 +203,7 @@ export default function PricingPage() {
               )}
               role="switch"
               aria-checked={billingPeriod === 'yearly'}
+              aria-label="Toggle annual billing"
             >
               <span
                 className={cn(
@@ -211,7 +212,7 @@ export default function PricingPage() {
                 )}
               />
             </button>
-            <span className={cn('text-sm font-medium', billingPeriod === 'yearly' ? 'text-secondary-900 dark:text-white' : 'text-secondary-500')}>
+            <span className={cn('text-sm font-medium', billingPeriod === 'yearly' ? 'text-secondary-900 dark:text-white' : 'text-secondary-600 dark:text-secondary-300')}>
               Yearly
               <Badge variant="secondary" className="ml-2 text-xs">Save 20%</Badge>
             </span>
@@ -380,13 +381,13 @@ function PlanCard({ plan, billingPeriod, price, isPopular }: {
         {/* Limits */}
         <div className="space-y-3 p-4 bg-secondary-50 dark:bg-secondary-800/50 rounded-lg">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-secondary-600 dark:text-secondary-400">QR Scans/month</span>
+            <span className="text-secondary-600 dark:text-secondary-300">QR Scans/month</span>
             <span className="font-medium text-secondary-900 dark:text-white font-mono">
               {formatLimit(plan.monthly_qr_scans)}
             </span>
           </div>
           <div className="flex items-center justify-between text-sm">
-            <span className="text-secondary-600 dark:text-secondary-400">AI Generations/month</span>
+            <span className="text-secondary-600 dark:text-secondary-300">AI Generations/month</span>
             <span className="font-medium text-secondary-900 dark:text-white font-mono">
               {formatLimit(plan.monthly_ai_generations)}
             </span>
@@ -400,13 +401,13 @@ function PlanCard({ plan, billingPeriod, price, isPopular }: {
               {plan.features[feature.key as keyof typeof plan.features] ? (
                 <Check className="h-5 w-5 text-green-500 flex-shrink-0" />
               ) : (
-                <X className="h-5 w-5 text-secondary-300 dark:text-secondary-600 flex-shrink-0" />
+                <X className="h-5 w-5 text-secondary-400 dark:text-secondary-500 flex-shrink-0" />
               )}
               <span className={cn(
                 'flex-1 text-left',
                 plan.features[feature.key as keyof typeof plan.features]
                   ? 'text-secondary-700 dark:text-secondary-300'
-                  : 'text-secondary-500 dark:text-secondary-400'
+                  : 'text-secondary-600 dark:text-secondary-400'
               )}>
                 {feature.label}
               </span>

@@ -24,14 +24,14 @@ export function LandingFooter() {
               <Sparkles className="w-3.5 h-3.5" />
               Customer-authored · AI-assisted
             </div>
-            <div className="text-xs text-slate-500 pt-2">
+            <div className="text-xs text-slate-400 pt-2">
               © {new Date().getFullYear()} ReviewAI. All rights reserved.
             </div>
           </div>
 
           {/* Product Links */}
           <div className="space-y-3">
-            <h4 className="text-xs font-semibold text-white uppercase tracking-wider">Product</h4>
+            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Product</h3>
             <ul className="space-y-2 text-xs sm:text-sm">
               <li>
                 <a href="#how-it-works" className="hover:text-white transition-colors">
@@ -63,7 +63,7 @@ export function LandingFooter() {
 
           {/* Company & Trust */}
           <div className="space-y-3">
-            <h4 className="text-xs font-semibold text-white uppercase tracking-wider">Company & Trust</h4>
+            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Company & Trust</h3>
             <ul className="space-y-2 text-xs sm:text-sm">
               <li>
                 <a href="#about" className="hover:text-white transition-colors">
@@ -95,7 +95,7 @@ export function LandingFooter() {
 
           {/* Account */}
           <div className="space-y-3">
-            <h4 className="text-xs font-semibold text-white uppercase tracking-wider">Account</h4>
+            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Account</h3>
             <ul className="space-y-2 text-xs sm:text-sm">
               <li>
                 <Link href="/login" className="hover:text-white transition-colors">
@@ -113,7 +113,7 @@ export function LandingFooter() {
         </div>
 
         {/* Bottom Bar & Microcopy */}
-        <div className="pt-8 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+        <div className="pt-8 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-400">
           <p className="max-w-2xl text-left">
             ReviewAI helps businesses collect and organize customer feedback. Customers remain responsible for reviewing, editing and submitting their own Google reviews.
           </p>
